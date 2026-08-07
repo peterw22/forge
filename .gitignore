@@ -1,0 +1,37 @@
+# Operating system files
+.DS_Store
+
+# Local Pi Go runtime state and session transcripts
+/.pi-go/
+
+# Locally built Go command binaries
+/pi-go-agent
+/pi-go-codex
+/pi-go-tui
+
+# Packaged release artifacts
+/dist/
+
+# Flutter/Dart generated files and build products
+/flutter/pi_go_app/.dart_tool/
+/flutter/pi_go_app/.flutter-plugins-dependencies
+/flutter/pi_go_app/.pub/
+/flutter/pi_go_app/build/
+/flutter/pi_go_app/coverage/
+/flutter/pi_go_app/android/.gradle/
+/flutter/pi_go_app/android/.cxx/
+/flutter/pi_go_app/android/build/
+/flutter/pi_go_app/android/local.properties
+/flutter/pi_go_app/macos/Flutter/ephemeral/
+/flutter/pi_go_app/macos/Pods/
+
+# IDE and editor workspace files
+.idea/
+*.iml
+*.ipr
+*.iws
+*.swp
+
+# Logs and temporary files
+*.log
+*.tmp
