@@ -99,6 +99,7 @@ func main() {
 		var messages []agent.Message
 		var usage agent.Usage
 		workspace, selectedModel, selectedThinking := cwd, model, thinking
+		selectedYOLO := false
 		if resume && sessionPath != "" {
 			var header session.Header
 			store, header, messages, usage, err = session.Resume(sessionPath)
@@ -115,6 +116,7 @@ func main() {
 			if header.Thinking != "" {
 				selectedThinking = header.Thinking
 			}
+			selectedYOLO = header.YOLO
 		} else {
 			store, err = session.New(cwd, model, thinking)
 			if err != nil {
@@ -128,6 +130,7 @@ func main() {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
 		}
+		core.SetYOLO(selectedYOLO)
 		initial := newSessionRuntime(store.ID(), core, session.NewController(cwd, store))
 		registry := newRuntimeRegistry(cwd, initial, factory)
 		defer registry.Shutdown()
@@ -188,6 +191,7 @@ type backendCommand struct {
 	CustomInstructions string               `json:"customInstructions,omitempty"`
 	ApprovalID         string               `json:"approvalId,omitempty"`
 	Approved           bool                 `json:"approved,omitempty"`
+	Enabled            bool                 `json:"enabled"`
 }
 
 type backendResponse struct {
@@ -204,6 +208,7 @@ type backendResponse struct {
 	Thinking string          `json:"thinking,omitempty"`
 	Session  string          `json:"session,omitempty"`
 	CWD      string          `json:"cwd,omitempty"`
+	YOLO     *bool           `json:"yolo,omitempty"`
 }
 
 var errBackendShutdown = errors.New("agent backend shutdown")

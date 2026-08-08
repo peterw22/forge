@@ -106,6 +106,7 @@ class AgentConnection extends ChangeNotifier {
   final List<TranscriptItem> messages = [];
   String status = 'disconnected';
   bool streaming = false;
+  bool yolo = false;
   ApprovalRequest? pendingApproval;
   int input = 0;
   int cacheRead = 0;
@@ -250,6 +251,13 @@ class AgentConnection extends ChangeNotifier {
     notifyListeners();
   }
 
+  void setYOLO(bool enabled) {
+    if (!connected || streaming) return;
+    status = enabled ? 'enabling YOLO mode…' : 'enabling Luna safety gate…';
+    send({'id': 'flutter-yolo', 'type': 'set_yolo', 'enabled': enabled});
+    notifyListeners();
+  }
+
   void setWorkingDirectory(String cwd) {
     status = 'changing workspace…';
     send({'id': 'flutter-cwd', 'type': 'set_cwd', 'cwd': cwd});
@@ -338,6 +346,14 @@ class AgentConnection extends ChangeNotifier {
           when thinking.isNotEmpty) {
         currentThinking = thinking;
       }
+      if (response['yolo'] case final bool enabled) {
+        yolo = enabled;
+        if (response['command'] == 'set_yolo') {
+          status = enabled
+              ? 'YOLO mode enabled · Luna safety bypassed'
+              : 'Luna safety gate enabled';
+        }
+      }
       if (response['cwd'] case final String cwd when cwd.isNotEmpty) {
         currentCWD = cwd;
         if (response['command'] == 'set_cwd') status = 'workspace: $cwd';
@@ -363,6 +379,7 @@ class AgentConnection extends ChangeNotifier {
   void _restore(Map<String, dynamic> state) {
     messages.clear();
     streaming = (state['Streaming'] ?? state['streaming'] ?? false) == true;
+    yolo = (state['YOLO'] ?? state['yolo'] ?? false) == true;
     final stored = state['Messages'] ?? state['messages'] ?? const [];
     final toolLabels = <String, String>{};
     final toolCalls = <String, Map<String, dynamic>>{};
@@ -1274,9 +1291,14 @@ class _AgentPageState extends State<AgentPage> {
                         fontWeight: FontWeight.w700,
                       ),
                     ),
-                    const SizedBox(width: 10),
+                    SizedBox(width: compact ? 2 : 10),
                     if (compact)
                       PopupMenuButton<void>(
+                        padding: EdgeInsets.zero,
+                        constraints: const BoxConstraints.tightFor(
+                          width: 40,
+                          height: 40,
+                        ),
                         tooltip: 'Current model and thinking effort',
                         icon: const Icon(Icons.tune),
                         itemBuilder: (_) => [
@@ -1330,7 +1352,66 @@ class _AgentPageState extends State<AgentPage> {
                     ],
                     const Spacer(),
                     if (compact)
+                      IconButton(
+                        padding: EdgeInsets.zero,
+                        constraints: const BoxConstraints.tightFor(
+                          width: 40,
+                          height: 40,
+                        ),
+                        tooltip: agent.yolo
+                            ? 'YOLO enabled: bypassing Luna safety gate'
+                            : 'Enable YOLO mode and bypass Luna safety gate',
+                        onPressed: agent.connected && !agent.streaming
+                            ? () => agent.setYOLO(!agent.yolo)
+                            : null,
+                        style: agent.yolo
+                            ? IconButton.styleFrom(
+                                backgroundColor: Theme.of(
+                                  context,
+                                ).colorScheme.errorContainer,
+                                foregroundColor: Theme.of(
+                                  context,
+                                ).colorScheme.onErrorContainer,
+                              )
+                            : IconButton.styleFrom(
+                                side: BorderSide(
+                                  color: Theme.of(context).colorScheme.outline,
+                                ),
+                              ),
+                        icon: const Icon(Icons.rocket_launch_outlined),
+                      )
+                    else
+                      agent.yolo
+                          ? FilledButton.icon(
+                              onPressed: agent.connected && !agent.streaming
+                                  ? () => agent.setYOLO(false)
+                                  : null,
+                              style: FilledButton.styleFrom(
+                                backgroundColor: Theme.of(
+                                  context,
+                                ).colorScheme.errorContainer,
+                                foregroundColor: Theme.of(
+                                  context,
+                                ).colorScheme.onErrorContainer,
+                              ),
+                              icon: const Icon(Icons.rocket_launch_outlined),
+                              label: const Text('YOLO'),
+                            )
+                          : OutlinedButton.icon(
+                              onPressed: agent.connected && !agent.streaming
+                                  ? () => agent.setYOLO(true)
+                                  : null,
+                              icon: const Icon(Icons.rocket_launch_outlined),
+                              label: const Text('YOLO'),
+                            ),
+                    SizedBox(width: compact ? 2 : 6),
+                    if (compact)
                       IconButton.outlined(
+                        padding: EdgeInsets.zero,
+                        constraints: const BoxConstraints.tightFor(
+                          width: 40,
+                          height: 40,
+                        ),
                         tooltip: 'Switch session',
                         onPressed: agent.connected ? _showSessions : null,
                         icon: const Icon(Icons.account_tree_outlined),
@@ -1341,8 +1422,12 @@ class _AgentPageState extends State<AgentPage> {
                         icon: const Icon(Icons.account_tree_outlined),
                         label: const Text('Sessions  Ctrl-B S'),
                       ),
-                    const SizedBox(width: 6),
+                    SizedBox(width: compact ? 2 : 6),
                     IconButton.outlined(
+                      padding: compact ? EdgeInsets.zero : null,
+                      constraints: compact
+                          ? const BoxConstraints.tightFor(width: 40, height: 40)
+                          : null,
                       tooltip: agent.currentCWD.isEmpty
                           ? 'Set agent working directory'
                           : 'Workspace: ${agent.currentCWD}',
@@ -1351,8 +1436,12 @@ class _AgentPageState extends State<AgentPage> {
                           : null,
                       icon: const Icon(Icons.folder_outlined),
                     ),
-                    const SizedBox(width: 6),
+                    SizedBox(width: compact ? 2 : 6),
                     IconButton.outlined(
+                      padding: compact ? EdgeInsets.zero : null,
+                      constraints: compact
+                          ? const BoxConstraints.tightFor(width: 40, height: 40)
+                          : null,
                       tooltip: showConnectionSettings
                           ? 'Hide connection settings'
                           : 'Show connection settings',

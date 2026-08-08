@@ -229,6 +229,32 @@ func TestRunTurnsToolPanicIntoErrorResult(t *testing.T) {
 	}
 }
 
+func TestYOLOBypassesToolGuard(t *testing.T) {
+	provider := &scriptedProvider{scripts: [][]ProviderEvent{
+		{{Type: ProviderToolCall, ToolCall: ContentBlock{Type: "toolCall", ID: "danger", Name: "bash"}}, {Type: ProviderDone, StopReason: "toolUse"}},
+		{{Type: ProviderTextDelta, Delta: "done"}, {Type: ProviderDone, StopReason: "stop"}},
+	}}
+	executed := false
+	core, err := New(Config{Model: "test", Provider: provider, ToolGuard: denyingGuard{}, YOLO: true, Tools: []Tool{{Name: "bash", Execute: func(context.Context, map[string]any, func(ToolResult)) (ToolResult, error) {
+		executed = true
+		return ToolResult{Content: []ContentBlock{{Type: "text", Text: "ok"}}}, nil
+	}}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var guarded bool
+	if err := core.Run(context.Background(), "do it", func(event Event) {
+		if event.Type == EventApprovalRequired || event.Type == EventToolSafetyUpdate {
+			guarded = true
+		}
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if !executed || guarded || !core.Snapshot().YOLO {
+		t.Fatalf("executed=%v guarded=%v state=%#v", executed, guarded, core.Snapshot())
+	}
+}
+
 func TestRunRejectsConcurrentCalls(t *testing.T) {
 	started := make(chan struct{})
 	unblock := make(chan struct{})

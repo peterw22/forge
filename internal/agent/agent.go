@@ -165,6 +165,7 @@ type Config struct {
 	ParallelTools bool
 	ToolGuard     ToolGuard
 	AllowApproval bool
+	YOLO          bool
 }
 
 type Agent struct {
@@ -183,6 +184,7 @@ type State struct {
 	Usage             Usage     `json:"usage"`
 	ContextTokens     int       `json:"contextTokens"`
 	UpstreamTransport string    `json:"upstreamTransport,omitempty"`
+	YOLO              bool      `json:"yolo"`
 }
 
 func New(config Config) (*Agent, error) {
@@ -192,7 +194,7 @@ func New(config Config) (*Agent, error) {
 	if config.Model == "" {
 		return nil, errors.New("agent model is required")
 	}
-	return &Agent{config: config, approvals: make(map[string]chan bool)}, nil
+	return &Agent{config: config, state: State{YOLO: config.YOLO}, approvals: make(map[string]chan bool)}, nil
 }
 
 func (a *Agent) Restore(messages []Message, model, thinking string, usage Usage) {
@@ -233,6 +235,19 @@ func (a *Agent) SetThinkingLevel(level string) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.config.Thinking = level
+}
+
+func (a *Agent) SetYOLO(enabled bool) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.config.YOLO = enabled
+	a.state.YOLO = enabled
+}
+
+func (a *Agent) YOLOEnabled() bool {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.config.YOLO
 }
 
 func (a *Agent) Snapshot() State {
@@ -444,10 +459,10 @@ func (a *Agent) executeTools(ctx context.Context, calls []ContentBlock, emit fun
 
 func (a *Agent) guardTool(ctx context.Context, call ContentBlock, emit func(Event)) GuardDecision {
 	a.mu.RLock()
-	guard, allowApproval, cwd := a.config.ToolGuard, a.config.AllowApproval, a.config.WorkingDirectory
+	guard, allowApproval, yolo, cwd := a.config.ToolGuard, a.config.AllowApproval, a.config.YOLO, a.config.WorkingDirectory
 	messages := append([]Message(nil), a.state.Messages...)
 	a.mu.RUnlock()
-	if guard == nil {
+	if yolo || guard == nil {
 		return GuardDecision{Allowed: true}
 	}
 	showLuna := call.Name == "bash"

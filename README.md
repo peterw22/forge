@@ -109,7 +109,7 @@ flutter pub get
 flutter run -d macos
 ```
 
-With full Xcode installed, `./scripts/build-macos-app.sh` creates `dist/macos/Forge.app` and `Forge-macOS.zip`. The macOS connection bar is restricted to WebSocket. The app restores backend state on connect and supports prompts, native GitHub-flavored Markdown, streaming transcript and tool-log updates, abort/process-group kill, model switching, runtime session selection (button or `Ctrl-B` then `s`), and token usage. Prompt images can be selected with the picker or pasted directly on macOS, web, and Android.
+With full Xcode installed, `./scripts/build-macos-app.sh` creates `dist/macos/Forge.app` and `Forge-macOS.zip`. The macOS connection bar is restricted to WebSocket. The app restores backend state on connect and supports prompts, native GitHub-flavored Markdown, streaming transcript and tool-log updates, abort/process-group kill, model switching, runtime session selection (button or `Ctrl-B` then `s`), a session-specific YOLO switch that bypasses the Luna tool-safety gate, and token usage. Prompt images can be selected with the picker or pasted directly on macOS, web, and Android.
 
 The same Flutter project builds for web:
 

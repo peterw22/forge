@@ -23,14 +23,17 @@ func TestRepairDanglingToolCalls(t *testing.T) {
 }
 
 func TestResumeUsesHeaderSettingsAsFallbackAndLatestSettingsOverride(t *testing.T) {
-	tests := []struct{ name, extra, wantModel, wantThinking, wantCWD string }{
-		{"header fallback", "", "gpt-original", "high", "/old"},
-		{"settings override", "{\"type\":\"session_settings\",\"model\":\"gpt-new\"}\n{\"type\":\"session_settings\",\"thinking\":\"max\",\"cwd\":\"/new\"}\n", "gpt-new", "max", "/new"},
+	tests := []struct {
+		name, extra, wantModel, wantThinking, wantCWD string
+		wantYOLO                                      bool
+	}{
+		{"header fallback", "", "gpt-original", "high", "/old", true},
+		{"settings override", "{\"type\":\"session_settings\",\"model\":\"gpt-new\"}\n{\"type\":\"session_settings\",\"thinking\":\"max\",\"cwd\":\"/new\",\"yolo\":false}\n", "gpt-new", "max", "/new", false},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "session.jsonl")
-			body := "{\"type\":\"session\",\"version\":1,\"CWD\":\"/old\",\"Model\":\"gpt-original\",\"Thinking\":\"high\",\"createdAt\":\"2024-01-01T00:00:00Z\"}\n" + test.extra
+			body := "{\"type\":\"session\",\"version\":1,\"CWD\":\"/old\",\"Model\":\"gpt-original\",\"Thinking\":\"high\",\"yolo\":true,\"createdAt\":\"2024-01-01T00:00:00Z\"}\n" + test.extra
 			if err := os.WriteFile(path, []byte(body), 0644); err != nil {
 				t.Fatal(err)
 			}
@@ -39,8 +42,8 @@ func TestResumeUsesHeaderSettingsAsFallbackAndLatestSettingsOverride(t *testing.
 				t.Fatal(err)
 			}
 			defer store.Close()
-			if header.Model != test.wantModel || header.Thinking != test.wantThinking || header.CWD != test.wantCWD {
-				t.Fatalf("settings = %q/%q/%q, want %q/%q/%q", header.Model, header.Thinking, header.CWD, test.wantModel, test.wantThinking, test.wantCWD)
+			if header.Model != test.wantModel || header.Thinking != test.wantThinking || header.CWD != test.wantCWD || header.YOLO != test.wantYOLO {
+				t.Fatalf("settings = %q/%q/%q/%v, want %q/%q/%q/%v", header.Model, header.Thinking, header.CWD, header.YOLO, test.wantModel, test.wantThinking, test.wantCWD, test.wantYOLO)
 			}
 		})
 	}

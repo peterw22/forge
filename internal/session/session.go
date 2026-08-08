@@ -20,6 +20,7 @@ type Header struct {
 	Version              int    `json:"version"`
 	CWD, Model, Thinking string
 	Name                 *string   `json:"name,omitempty"`
+	YOLO                 bool      `json:"yolo"`
 	CreatedAt            time.Time `json:"createdAt"`
 }
 type Store struct {
@@ -69,6 +70,11 @@ func (controller *Controller) SetThinking(thinking string) error {
 	controller.mu.Lock()
 	defer controller.mu.Unlock()
 	return controller.store.SetThinking(thinking)
+}
+func (controller *Controller) SetYOLO(enabled bool) error {
+	controller.mu.Lock()
+	defer controller.mu.Unlock()
+	return controller.store.SetYOLO(enabled)
 }
 func (controller *Controller) SetCWD(cwd string) error {
 	controller.mu.Lock()
@@ -302,6 +308,7 @@ func Resume(path string) (*Store, Header, []agent.Message, agent.Usage, error) {
 				Model    *string `json:"model"`
 				Thinking *string `json:"thinking"`
 				CWD      *string `json:"cwd"`
+				YOLO     *bool   `json:"yolo"`
 			}
 			if json.Unmarshal(line, &record) == nil {
 				if record.Model != nil && strings.TrimSpace(*record.Model) != "" {
@@ -312,6 +319,9 @@ func Resume(path string) (*Store, Header, []agent.Message, agent.Usage, error) {
 				}
 				if record.CWD != nil && strings.TrimSpace(*record.CWD) != "" {
 					h.CWD = *record.CWD
+				}
+				if record.YOLO != nil {
+					h.YOLO = *record.YOLO
 				}
 			}
 		case "compaction":
@@ -416,6 +426,12 @@ func (s *Store) SetThinking(thinking string) error {
 		Type     string `json:"type"`
 		Thinking string `json:"thinking"`
 	}{"session_settings", thinking})
+}
+func (s *Store) SetYOLO(enabled bool) error {
+	return s.write(struct {
+		Type string `json:"type"`
+		YOLO bool   `json:"yolo"`
+	}{"session_settings", enabled})
 }
 func (s *Store) SetCWD(cwd string) error {
 	return s.write(struct {

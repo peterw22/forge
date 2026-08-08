@@ -15,6 +15,17 @@ void main() {
     expect(app.theme?.brightness, Brightness.light);
     expect(app.darkTheme?.brightness, Brightness.dark);
     expect(find.text('Connect'), findsOneWidget);
+    expect(find.text('YOLO'), findsOneWidget);
+    final yolo = tester.widget<OutlinedButton>(
+      find.widgetWithText(OutlinedButton, 'YOLO'),
+    );
+    final sessions = tester.widget<OutlinedButton>(
+      find.widgetWithText(OutlinedButton, 'Sessions  Ctrl-B S'),
+    );
+    expect(
+      tester.getTopLeft(find.byWidget(yolo)).dx,
+      lessThan(tester.getTopLeft(find.byWidget(sessions)).dx),
+    );
     expect(find.textContaining('upstream —'), findsOneWidget);
     expect(find.text('Unix'), findsOneWidget);
     expect(find.text('TCP'), findsOneWidget);
@@ -42,6 +53,7 @@ void main() {
     addTearDown(() => tester.binding.setSurfaceSize(null));
     await tester.pumpWidget(const PiGoApp());
     expect(find.byIcon(Icons.tune), findsOneWidget);
+    expect(find.byIcon(Icons.rocket_launch_outlined), findsOneWidget);
     expect(find.byIcon(Icons.account_tree_outlined), findsOneWidget);
     expect(find.byIcon(Icons.folder_outlined), findsOneWidget);
     expect(find.byIcon(Icons.link_off), findsOneWidget);

@@ -390,6 +390,18 @@ func (runtime *sessionRuntime) setThinking(level string) error {
 	runtime.core.SetThinkingLevel(level)
 	return nil
 }
+func (runtime *sessionRuntime) setYOLO(enabled bool) error {
+	runtime.mu.Lock()
+	defer runtime.mu.Unlock()
+	if runtime.active {
+		return errors.New("abort the current turn before changing YOLO mode")
+	}
+	if err := runtime.sessions.SetYOLO(enabled); err != nil {
+		return err
+	}
+	runtime.core.SetYOLO(enabled)
+	return nil
+}
 func (runtime *sessionRuntime) Abort() bool {
 	runtime.mu.Lock()
 	cancel, active := runtime.cancel, runtime.active
@@ -498,6 +510,7 @@ func (registry *runtimeRegistry) Attach(id string) (*sessionRuntime, error) {
 		_ = store.Close()
 		return nil, err
 	}
+	core.SetYOLO(header.YOLO)
 	runtime := newSessionRuntime(id, core, session.NewController(registry.root, store))
 	registry.mu.Lock()
 	if existing := registry.runtimes[id]; existing != nil {
@@ -516,8 +529,13 @@ func (registry *runtimeRegistry) Attach(id string) (*sessionRuntime, error) {
 }
 func (registry *runtimeRegistry) New(from *sessionRuntime) (*sessionRuntime, error) {
 	model, thinking, workspace := from.core.Settings()
+	yolo := from.core.YOLOEnabled()
 	store, err := session.NewAt(registry.root, workspace, model, thinking)
 	if err != nil {
+		return nil, err
+	}
+	if err := store.SetYOLO(yolo); err != nil {
+		_ = store.Close()
 		return nil, err
 	}
 	core, err := registry.factory(workspace, model, thinking, nil, agent.Usage{})
@@ -525,6 +543,7 @@ func (registry *runtimeRegistry) New(from *sessionRuntime) (*sessionRuntime, err
 		_ = store.Close()
 		return nil, err
 	}
+	core.SetYOLO(yolo)
 	runtime := newSessionRuntime(store.ID(), core, session.NewController(registry.root, store))
 	registry.mu.Lock()
 	if registry.closed {
@@ -709,6 +728,12 @@ func (client *clientConnection) handle(command backendCommand) error {
 			return err
 		}
 		client.reply(backendResponse{ID: command.ID, Type: "response", Command: command.Type, Success: true, Thinking: command.Level, Session: runtime.id})
+	case "set_yolo":
+		if err := runtime.setYOLO(command.Enabled); err != nil {
+			return err
+		}
+		enabled := command.Enabled
+		client.reply(backendResponse{ID: command.ID, Type: "response", Command: command.Type, Success: true, YOLO: &enabled, Session: runtime.id})
 	case "set_session_name":
 		if err := runtime.sessions.SetName(command.Name); err != nil {
 			return err

@@ -49,6 +49,8 @@ With `adb reverse` active, the Android app's default `ws://127.0.0.1:7346/ws` ad
 
 The macOS app sandbox is enabled with outbound-network and user-selected read-only file access. The app communicates only with the configured WebSocket backend. Its attached session ID is retained across connection drops, so reconnecting reattaches to the same detached run. Multiple Forge clients may observe one shared session, or select separate sessions that execute concurrently in the daemon. TCP and WebSocket listeners remain restricted to loopback by the Go backend unless `--allow-remote` is explicitly supplied.
 
+The **YOLO** switch immediately left of Sessions is session-specific. While enabled, `pi-go-agent` skips the Luna tool-safety classifier and manual approval gate. It can only be changed while the session is idle and is restored when that session is reopened.
+
 ## Image paste
 
 Images can be attached with the image picker or pasted directly into the prompt on macOS, web, and Android. Clipboard images use the same preview, four-image, and 10 MiB total limits as picked files; ordinary text paste is preserved.

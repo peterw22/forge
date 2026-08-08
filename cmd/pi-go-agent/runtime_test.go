@@ -376,6 +376,27 @@ func TestIndependentSessionRuntimesExecuteConcurrently(t *testing.T) {
 	}
 }
 
+func TestYOLOMutationPersistsAndIsRejectedWhileBusy(t *testing.T) {
+	provider := newDetachedTestProvider()
+	runtime, _ := testSessionRuntime(t, provider)
+	defer runtime.close()
+	if err := runtime.setYOLO(true); err != nil {
+		t.Fatal(err)
+	}
+	if !runtime.core.Snapshot().YOLO {
+		t.Fatal("YOLO mode was not enabled")
+	}
+	if err := runtime.StartPrompt("busy-yolo", []agent.ContentBlock{{Type: "text", Text: "wait"}}); err != nil {
+		t.Fatal(err)
+	}
+	<-provider.started
+	if err := runtime.setYOLO(false); err == nil {
+		t.Fatal("YOLO mutation was accepted while busy")
+	}
+	runtime.Abort()
+	waitRuntimeIdle(t, runtime)
+}
+
 func TestSlowSubscriberIsRemovedWithoutBlockingRuntime(t *testing.T) {
 	runtime, _ := testSessionRuntime(t, newDetachedTestProvider())
 	defer runtime.close()
