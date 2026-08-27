@@ -17,7 +17,7 @@ modules:
     buildsystem: simple
     build-commands:
       - install -d /app
-      - cp -a payload/. /app/
+      - cp -a bin lib share /app/
     sources:
       - type: dir
         path: payload

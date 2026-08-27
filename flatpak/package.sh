@@ -21,7 +21,7 @@ done
 rm -rf "$PAYLOAD" "$BUILDER_DIR" "$REPO"
 mkdir -p "$PAYLOAD" "$(dirname "$BUNDLE")"
 cp -a "$BUILD_ROOT/files/." "$PAYLOAD/"
-flatpak-builder --force-clean --repo="$REPO" "$BUILDER_DIR" \
+flatpak-builder --force-clean --default-branch=stable --repo="$REPO" "$BUILDER_DIR" \
   "$ROOT/flatpak/com.tingouw.forge.yml"
 flatpak build-bundle "$REPO" "$BUNDLE" com.tingouw.forge stable
 flatpak build-update-repo "$REPO" --generate-static-deltas

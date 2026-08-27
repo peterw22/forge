@@ -18,8 +18,7 @@ bool get deviceIdentitySupported =>
             defaultTargetPlatform == TargetPlatform.android ||
             defaultTargetPlatform == TargetPlatform.macOS));
 
-bool get deviceIdentityExportSupported =>
-    deviceIdentitySupported && !softwareDeviceIdentitySupported;
+bool get deviceIdentityExportSupported => deviceIdentitySupported;
 
 bool get pushSupported =>
     !kIsWeb &&
