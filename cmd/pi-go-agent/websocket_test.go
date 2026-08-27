@@ -21,7 +21,7 @@ func TestParseWebSocketEndpoint(t *testing.T) {
 	}
 }
 
-func TestAllowedWebSocketOrigin(t *testing.T) {
+func TestAllowedLegacyWebSocketOrigin(t *testing.T) {
 	for _, origin := range []string{"", "http://localhost:8080", "http://127.0.0.1:8080", "http://[::1]:8080"} {
 		if !allowedWebSocketOrigin(origin) {
 			t.Fatalf("origin %q rejected", origin)

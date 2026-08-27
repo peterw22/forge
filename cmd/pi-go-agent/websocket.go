@@ -22,9 +22,13 @@ import (
 const (
 	webSocketGUID       = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 	maxWebSocketMessage = 32 * 1024 * 1024
+	maxAuthMessage      = 16 * 1024
 )
 
-func serveWebSocket(registry *runtimeRegistry, endpoint string, allowRemote bool) error {
+func serveWebSocket(registry *runtimeRegistry, endpoint string, allowRemote bool, authPolicy *clientAuthPolicy) error {
+	if authPolicy == nil {
+		return errors.New("WebSocket listeners require an authorized device whitelist")
+	}
 	address, path, err := parseWebSocketEndpoint(endpoint, allowRemote)
 	if err != nil {
 		return err
@@ -36,22 +40,32 @@ func serveWebSocket(registry *runtimeRegistry, endpoint string, allowRemote bool
 	defer listener.Close()
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("/healthz", func(writer http.ResponseWriter, _ *http.Request) {
+	mux.HandleFunc("/healthz", func(writer http.ResponseWriter, request *http.Request) {
+		if request.Method != http.MethodGet && request.Method != http.MethodHead {
+			writer.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
 		writer.Header().Set("Content-Type", "application/json")
-		_, _ = io.WriteString(writer, `{"ok":true}`+"\n")
+		writer.Header().Set("Cache-Control", "no-store")
+		if request.Method == http.MethodGet {
+			_, _ = io.WriteString(writer, `{"ok":true}`+"\n")
+		}
 	})
 	mux.HandleFunc(path, func(writer http.ResponseWriter, request *http.Request) {
-		stream, upgradeErr := upgradeWebSocket(writer, request)
+		stream, upgradeErr := upgradeWebSocket(writer, request, authPolicy != nil)
 		if upgradeErr != nil {
 			http.Error(writer, upgradeErr.Error(), http.StatusBadRequest)
 			return
 		}
 		defer stream.Close()
-		if serveErr := serveClient(registry, stream, stream, stream); serveErr != nil && !errors.Is(serveErr, errBackendShutdown) {
+		if serveErr := serveClient(registry, stream, stream, stream, authPolicy); serveErr != nil && !errors.Is(serveErr, errBackendShutdown) && !errors.Is(serveErr, io.EOF) {
 			fmt.Fprintln(os.Stderr, "websocket client disconnected:", serveErr)
 		}
 	})
-	server := &http.Server{Handler: mux, ReadHeaderTimeout: 5 * time.Second}
+	server := &http.Server{
+		Handler: mux, ReadHeaderTimeout: 5 * time.Second,
+		IdleTimeout: 90 * time.Second, MaxHeaderBytes: 16 << 10,
+	}
 	go func() {
 		<-registry.done
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
@@ -88,12 +102,16 @@ func parseWebSocketEndpoint(endpoint string, allowRemote bool) (address, path st
 	return parsed.Host, path, nil
 }
 
-func upgradeWebSocket(writer http.ResponseWriter, request *http.Request) (*webSocketStream, error) {
+func upgradeWebSocket(writer http.ResponseWriter, request *http.Request, mutuallyAuthenticated bool) (*webSocketStream, error) {
 	if request.Method != http.MethodGet || !headerToken(request.Header, "Upgrade", "websocket") || !headerToken(request.Header, "Connection", "upgrade") {
 		return nil, errors.New("WebSocket upgrade required")
 	}
-	if !allowedWebSocketOrigin(request.Header.Get("Origin")) {
-		return nil, errors.New("WebSocket origin must be loopback")
+	// Browser Origin is only a CSWSH defense for legacy unauthenticated
+	// listeners. A mutually authenticated listener authorizes the device's
+	// signed P-256 identity before exposing state or accepting commands, so it
+	// may safely receive any Origin through a tunnel/proxy.
+	if !mutuallyAuthenticated && !allowedWebSocketOrigin(request.Header.Get("Origin")) {
+		return nil, errors.New("unauthenticated WebSocket origin must be loopback")
 	}
 	key := strings.TrimSpace(request.Header.Get("Sec-WebSocket-Key"))
 	version := request.Header.Get("Sec-WebSocket-Version")
@@ -118,7 +136,7 @@ func upgradeWebSocket(writer http.ResponseWriter, request *http.Request) (*webSo
 		_ = connection.Close()
 		return nil, err
 	}
-	return &webSocketStream{connection: connection, reader: buffered.Reader}, nil
+	return &webSocketStream{connection: connection, reader: buffered.Reader, readLimit: maxAuthMessage}, nil
 }
 
 func headerToken(header http.Header, name, wanted string) bool {
@@ -149,6 +167,11 @@ type webSocketStream struct {
 	readBuffer  []byte
 	writeBuffer []byte
 	writeMu     sync.Mutex
+	readLimit   int
+}
+
+func (stream *webSocketStream) SetAuthenticated() {
+	stream.readLimit = maxWebSocketMessage
 }
 
 func (stream *webSocketStream) Read(destination []byte) (int, error) {
@@ -223,7 +246,7 @@ func (stream *webSocketStream) readMessage() ([]byte, error) {
 			return nil, errors.New("only WebSocket text frames are supported")
 		}
 		message = append(message, payload...)
-		if len(message) > maxWebSocketMessage {
+		if len(message) > stream.readLimit {
 			return nil, errors.New("WebSocket message is too large")
 		}
 		if fin {
@@ -238,6 +261,9 @@ func (stream *webSocketStream) readFrame() (bool, byte, []byte, error) {
 		return false, 0, nil, err
 	}
 	fin, opcode, masked := header[0]&0x80 != 0, header[0]&0x0f, header[1]&0x80 != 0
+	if header[0]&0x70 != 0 {
+		return false, 0, nil, errors.New("WebSocket reserved bits require an unsupported extension")
+	}
 	if !masked {
 		return false, 0, nil, errors.New("client WebSocket frames must be masked")
 	}
@@ -255,8 +281,11 @@ func (stream *webSocketStream) readFrame() (bool, byte, []byte, error) {
 		}
 		length = binary.BigEndian.Uint64(extended[:])
 	}
-	if length > maxWebSocketMessage {
+	if length > uint64(stream.readLimit) {
 		return false, 0, nil, errors.New("WebSocket frame is too large")
+	}
+	if opcode >= 0x8 && (!fin || length > 125) {
+		return false, 0, nil, errors.New("invalid WebSocket control frame")
 	}
 	var mask [4]byte
 	if _, err := io.ReadFull(stream.reader, mask[:]); err != nil {

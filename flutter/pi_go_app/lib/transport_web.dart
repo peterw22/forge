@@ -2,11 +2,17 @@ import 'package:web_socket_channel/web_socket_channel.dart';
 
 import 'transport_base.dart';
 
+bool get flatpakFrontend => false;
 bool get nativeSocketsSupported => false;
 bool get webSocketOnlyClient => true;
+bool get localAgentSupported => false;
+String get defaultLocalAddress => '';
 String get defaultUnixAddress => '';
 String get defaultWebSocketAddress => 'ws://192.168.50.50:7346/ws';
 
+Future<AgentTransport> connectLocalTransport() => Future.error(
+  UnsupportedError('The bundled local agent requires the native macOS app'),
+);
 Future<AgentTransport> connectUnixTransport(String path) =>
     Future.error(UnsupportedError('Unix sockets require the native macOS app'));
 Future<AgentTransport> connectTcpTransport(String value) =>

@@ -31,7 +31,7 @@ func (p *scriptedProvider) Stream(_ context.Context, request Request) (<-chan Pr
 type denyingGuard struct{}
 
 func (denyingGuard) Check(context.Context, GuardRequest) GuardDecision {
-	return GuardDecision{Reason: "destructive command", Description: "Command:\nrm file"}
+	return GuardDecision{Reason: "destructive command", Description: "Command:\nrm file", NotificationSummary: "This operation may delete a workspace file."}
 }
 
 func TestToolGuardWaitsForExplicitApproval(t *testing.T) {
@@ -58,7 +58,8 @@ func TestToolGuardWaitsForExplicitApproval(t *testing.T) {
 			safetyStatuses = append(safetyStatuses, approval.SafetyStatus)
 		}
 	}
-	if approval.ApprovalID == "" || approval.Reason != "destructive command" {
+	if approval.ApprovalID == "" || approval.Reason != "destructive command" ||
+		approval.NotificationSummary != "This operation may delete a workspace file." {
 		t.Fatalf("approval = %#v", approval)
 	}
 	if len(safetyStatuses) != 2 || safetyStatuses[0] != "classifying" || safetyStatuses[1] != "rejected" {

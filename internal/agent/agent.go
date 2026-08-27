@@ -9,6 +9,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 )
@@ -23,12 +24,13 @@ const (
 )
 
 type Message struct {
-	Role       Role           `json:"role"`
-	Content    []ContentBlock `json:"content"`
-	ToolCallID string         `json:"toolCallId,omitempty"`
-	ToolName   string         `json:"toolName,omitempty"`
-	IsError    bool           `json:"isError,omitempty"`
-	Timestamp  int64          `json:"timestamp"`
+	Role        Role           `json:"role"`
+	Content     []ContentBlock `json:"content"`
+	ToolCallID  string         `json:"toolCallId,omitempty"`
+	ToolName    string         `json:"toolName,omitempty"`
+	ToolDetails any            `json:"toolDetails,omitempty"`
+	IsError     bool           `json:"isError,omitempty"`
+	Timestamp   int64          `json:"timestamp"`
 }
 
 type ContentBlock struct {
@@ -57,11 +59,13 @@ type GuardRequest struct {
 	Messages         []Message
 }
 type GuardDecision struct {
-	Allowed     bool
-	Reason      string
-	Description string
-	Scopes      []string
-	Remember    func()
+	Allowed             bool
+	Reason              string
+	Description         string
+	NotificationSummary string
+	Scopes              []string
+	Details             any
+	Remember            func()
 }
 type ToolGuard interface {
 	Check(context.Context, GuardRequest) GuardDecision
@@ -79,6 +83,7 @@ type Request struct {
 	SystemPrompt string
 	Messages     []Message
 	Tools        []Tool
+	SessionID    string
 }
 
 type ProviderEventType string
@@ -114,6 +119,10 @@ type Provider interface {
 	Stream(context.Context, Request) (<-chan ProviderEvent, <-chan error)
 }
 
+type ProviderSessionCloser interface {
+	CloseSession(string)
+}
+
 type EventType string
 
 const (
@@ -130,27 +139,32 @@ const (
 	EventCompactionStart     EventType = "compaction_start"
 	EventCompactionEnd       EventType = "compaction_end"
 	EventApprovalRequired    EventType = "approval_required"
+	EventApprovalResolved    EventType = "approval_resolved"
 	EventToolSafetyUpdate    EventType = "tool_safety_update"
+	EventTurnSummary         EventType = "turn_summary"
 	EventUpstreamTransport   EventType = "upstream_transport"
 )
 
 type Event struct {
-	Type              EventType      `json:"type"`
-	Message           *Message       `json:"message,omitempty"`
-	ToolCallID        string         `json:"toolCallId,omitempty"`
-	ToolName          string         `json:"toolName,omitempty"`
-	Arguments         map[string]any `json:"arguments,omitempty"`
-	Result            *ToolResult    `json:"result,omitempty"`
-	IsError           bool           `json:"isError,omitempty"`
-	Usage             Usage          `json:"usage,omitempty"`
-	StopReason        string         `json:"stopReason,omitempty"`
-	Error             string         `json:"error,omitempty"`
-	ApprovalID        string         `json:"approvalId,omitempty"`
-	Reason            string         `json:"reason,omitempty"`
-	Description       string         `json:"description,omitempty"`
-	SafetyStatus      string         `json:"safetyStatus,omitempty"`
-	SafetyMessage     string         `json:"safetyMessage,omitempty"`
-	UpstreamTransport string         `json:"upstreamTransport,omitempty"`
+	Type                EventType      `json:"type"`
+	Message             *Message       `json:"message,omitempty"`
+	ToolCallID          string         `json:"toolCallId,omitempty"`
+	ToolName            string         `json:"toolName,omitempty"`
+	Arguments           map[string]any `json:"arguments,omitempty"`
+	Result              *ToolResult    `json:"result,omitempty"`
+	IsError             bool           `json:"isError,omitempty"`
+	Usage               Usage          `json:"usage,omitempty"`
+	StopReason          string         `json:"stopReason,omitempty"`
+	Error               string         `json:"error,omitempty"`
+	ApprovalID          string         `json:"approvalId,omitempty"`
+	ApprovalDetails     any            `json:"approvalDetails,omitempty"`
+	Reason              string         `json:"reason,omitempty"`
+	Description         string         `json:"description,omitempty"`
+	NotificationSummary string         `json:"notificationSummary,omitempty"`
+	Summary             string         `json:"summary,omitempty"`
+	SafetyStatus        string         `json:"safetyStatus,omitempty"`
+	SafetyMessage       string         `json:"safetyMessage,omitempty"`
+	UpstreamTransport   string         `json:"upstreamTransport,omitempty"`
 }
 
 type Config struct {
@@ -158,6 +172,7 @@ type Config struct {
 	Thinking         string
 	SystemPrompt     string
 	WorkingDirectory string
+	SessionID        string
 	Provider         Provider
 	Tools            []Tool
 	// ParallelTools applies to tool calls in one assistant response. Pi defaults
@@ -211,6 +226,21 @@ func (a *Agent) Restore(messages []Message, model, thinking string, usage Usage)
 	}
 }
 
+func (a *Agent) SetSessionID(id string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.config.SessionID = id
+}
+
+func (a *Agent) CloseProviderSession() {
+	a.mu.RLock()
+	provider, id := a.config.Provider, a.config.SessionID
+	a.mu.RUnlock()
+	if closer, ok := provider.(ProviderSessionCloser); ok && id != "" {
+		closer.CloseSession(id)
+	}
+}
+
 func (a *Agent) SetModel(model string) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -228,6 +258,12 @@ func (a *Agent) SetWorkingDirectory(cwd, systemPrompt string, tools []Tool) {
 	defer a.mu.Unlock()
 	a.config.WorkingDirectory = cwd
 	a.config.SystemPrompt = systemPrompt
+	a.config.Tools = append([]Tool(nil), tools...)
+}
+
+func (a *Agent) SetTools(tools []Tool) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
 	a.config.Tools = append([]Tool(nil), tools...)
 }
 
@@ -328,9 +364,9 @@ func (a *Agent) RunContent(ctx context.Context, content []ContentBlock, emit fun
 
 func (a *Agent) runProvider(ctx context.Context, emit func(Event)) (Message, []ContentBlock, string, Usage, error) {
 	a.mu.RLock()
-	model, thinking, systemPrompt, tools := a.config.Model, a.config.Thinking, a.config.SystemPrompt, append([]Tool(nil), a.config.Tools...)
+	model, thinking, systemPrompt, sessionID, tools := a.config.Model, a.config.Thinking, a.config.SystemPrompt, a.config.SessionID, append([]Tool(nil), a.config.Tools...)
 	a.mu.RUnlock()
-	request := Request{Model: model, Thinking: thinking, SystemPrompt: systemPrompt, Messages: a.Snapshot().Messages, Tools: tools}
+	request := Request{Model: model, Thinking: thinking, SystemPrompt: systemPrompt, Messages: a.Snapshot().Messages, Tools: tools, SessionID: sessionID}
 	events, providerErr := a.config.Provider.Stream(ctx, request)
 	assistant := Message{Role: RoleAssistant, Timestamp: time.Now().UnixMilli()}
 	emit(Event{Type: EventMessageStart, Message: &assistant})
@@ -411,7 +447,7 @@ func (a *Agent) executeTools(ctx context.Context, calls []ContentBlock, emit fun
 		}
 		emit(Event{Type: EventToolExecutionStart, ToolCallID: call.ID, ToolName: call.Name, Arguments: call.Arguments})
 		if decision := a.guardTool(ctx, call, emit); !decision.Allowed {
-			result := ToolResult{Content: []ContentBlock{{Type: "text", Text: "Blocked by Bash Safety: " + decision.Reason}}, IsError: true}
+			result := ToolResult{Content: []ContentBlock{{Type: "text", Text: "Blocked by safety classifier: " + decision.Reason}}, IsError: true}
 			results[index] = toolResultMessage(call, result)
 			emit(Event{Type: EventToolExecutionEnd, ToolCallID: call.ID, ToolName: call.Name, Result: &result, IsError: true})
 			return nil
@@ -457,6 +493,11 @@ func (a *Agent) executeTools(ctx context.Context, calls []ContentBlock, emit fun
 	return results, nil
 }
 
+func stringArgument(arguments map[string]any, name string) string {
+	value, _ := arguments[name].(string)
+	return value
+}
+
 func (a *Agent) guardTool(ctx context.Context, call ContentBlock, emit func(Event)) GuardDecision {
 	a.mu.RLock()
 	guard, allowApproval, yolo, cwd := a.config.ToolGuard, a.config.AllowApproval, a.config.YOLO, a.config.WorkingDirectory
@@ -465,19 +506,23 @@ func (a *Agent) guardTool(ctx context.Context, call ContentBlock, emit func(Even
 	if yolo || guard == nil {
 		return GuardDecision{Allowed: true}
 	}
-	showLuna := call.Name == "bash"
-	if showLuna {
-		emit(Event{Type: EventToolSafetyUpdate, ToolCallID: call.ID, ToolName: call.Name, SafetyStatus: "classifying", SafetyMessage: "Luna is classifying this command…"})
+	showClassifier := call.Name == "bash" || call.Name == "write" || call.Name == "replace" ||
+		(call.Name == "cron" && func() bool {
+			action := strings.ToLower(strings.TrimSpace(stringArgument(call.Arguments, "action")))
+			return action == "create" || action == "delete" || action == "deregister"
+		}())
+	if showClassifier {
+		emit(Event{Type: EventToolSafetyUpdate, ToolCallID: call.ID, ToolName: call.Name, SafetyStatus: "classifying", SafetyMessage: "Safety classifier is checking this operation…"})
 	}
 	decision := guard.Check(ctx, GuardRequest{Tool: call.Name, Arguments: call.Arguments, WorkingDirectory: cwd, Messages: messages})
 	if decision.Allowed {
-		if showLuna {
-			emit(Event{Type: EventToolSafetyUpdate, ToolCallID: call.ID, ToolName: call.Name, SafetyStatus: "approved", SafetyMessage: "Luna approved this command"})
+		if showClassifier {
+			emit(Event{Type: EventToolSafetyUpdate, ToolCallID: call.ID, ToolName: call.Name, SafetyStatus: "approved", SafetyMessage: "Safety classifier approved this operation"})
 		}
 		return decision
 	}
-	if showLuna {
-		emit(Event{Type: EventToolSafetyUpdate, ToolCallID: call.ID, ToolName: call.Name, SafetyStatus: "rejected", SafetyMessage: "Luna rejected this command: " + decision.Reason})
+	if showClassifier {
+		emit(Event{Type: EventToolSafetyUpdate, ToolCallID: call.ID, ToolName: call.Name, SafetyStatus: "rejected", SafetyMessage: "Safety classifier rejected this operation: " + decision.Reason})
 	}
 	if !allowApproval {
 		return decision
@@ -485,29 +530,29 @@ func (a *Agent) guardTool(ctx context.Context, call ContentBlock, emit func(Even
 	a.approvalSerial.Lock()
 	defer a.approvalSerial.Unlock()
 	id, answer := a.newApproval()
-	emit(Event{Type: EventApprovalRequired, ToolCallID: call.ID, ToolName: call.Name, ApprovalID: id, Reason: decision.Reason, Description: decision.Description})
+	emit(Event{Type: EventApprovalRequired, ToolCallID: call.ID, ToolName: call.Name, ApprovalID: id, ApprovalDetails: decision.Details, Reason: decision.Reason, Description: decision.Description, NotificationSummary: decision.NotificationSummary})
 	select {
 	case approved := <-answer:
 		a.removeApproval(id)
 		if approved {
 			decision.Allowed = true
-			if showLuna {
-				emit(Event{Type: EventToolSafetyUpdate, ToolCallID: call.ID, ToolName: call.Name, SafetyStatus: "approved", SafetyMessage: "Manually approved after Luna rejection"})
+			if showClassifier {
+				emit(Event{Type: EventToolSafetyUpdate, ToolCallID: call.ID, ToolName: call.Name, SafetyStatus: "approved", SafetyMessage: "Manually approved after classifier rejection"})
 			}
 			if decision.Remember != nil {
 				decision.Remember()
 			}
 		} else {
 			decision.Reason = "User rejected the operation. " + decision.Reason
-			if showLuna {
-				emit(Event{Type: EventToolSafetyUpdate, ToolCallID: call.ID, ToolName: call.Name, SafetyStatus: "rejected", SafetyMessage: "Luna rejected this command; manual approval was declined"})
+			if showClassifier {
+				emit(Event{Type: EventToolSafetyUpdate, ToolCallID: call.ID, ToolName: call.Name, SafetyStatus: "rejected", SafetyMessage: "Safety classifier rejected this operation; manual approval was declined"})
 			}
 		}
 	case <-ctx.Done():
 		a.removeApproval(id)
 		decision.Reason = "Approval cancelled: " + ctx.Err().Error()
-		if showLuna {
-			emit(Event{Type: EventToolSafetyUpdate, ToolCallID: call.ID, ToolName: call.Name, SafetyStatus: "rejected", SafetyMessage: "Luna safety approval was cancelled"})
+		if showClassifier {
+			emit(Event{Type: EventToolSafetyUpdate, ToolCallID: call.ID, ToolName: call.Name, SafetyStatus: "rejected", SafetyMessage: "Safety classifier approval was cancelled"})
 		}
 	}
 	return decision
@@ -596,5 +641,5 @@ func (a *Agent) addUsage(usage Usage) {
 }
 
 func toolResultMessage(call ContentBlock, result ToolResult) Message {
-	return Message{Role: RoleToolResult, ToolCallID: call.ID, ToolName: call.Name, Content: result.Content, IsError: result.IsError, Timestamp: time.Now().UnixMilli()}
+	return Message{Role: RoleToolResult, ToolCallID: call.ID, ToolName: call.Name, Content: result.Content, ToolDetails: result.Details, IsError: result.IsError, Timestamp: time.Now().UnixMilli()}
 }

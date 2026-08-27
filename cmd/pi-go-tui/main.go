@@ -362,11 +362,7 @@ func (a *app) readEvents(output io.Reader) {
 		if a.program != nil && response.Command == "list_sessions" {
 			choices := []tui.SessionChoice{{ID: "__new_session__", Name: "＋ New session", Preview: "Start a blank session with the current model and thinking level"}}
 			for _, entry := range response.Sessions {
-				name := ""
-				if entry.Name != nil {
-					name = *entry.Name
-				}
-				choices = append(choices, tui.SessionChoice{ID: entry.ID, Name: name, Preview: entry.Preview, LastMessageTime: entry.LastMessageTime})
+				choices = append(choices, tui.SessionChoice{ID: entry.ID, Name: entry.LastMessageTime.Local().Format("2006-01-02 15:04"), Preview: entry.Summary, LastMessageTime: entry.LastMessageTime})
 			}
 			a.program.Send(tui.ShowSessions{Sessions: choices})
 		}

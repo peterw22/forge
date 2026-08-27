@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>com.tingouw.forge</id>
+  <name>Forge</name>
+  <summary>Encrypted frontend for remote Forge coding agents</summary>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>Proprietary</project_license>
+  <description>
+    <p>Forge connects to authenticated remote Forge agents over encrypted WebSockets. The Flatpak build does not bundle or launch a local agent. Cloud push registration is disabled; while Forge is running it can show session events through the XDG notification portal.</p>
+  </description>
+  <launchable type="desktop-id">com.tingouw.forge.desktop</launchable>
+  <releases>
+    <release version="1.0.0" date="2026-08-24"/>
+  </releases>
+</component>

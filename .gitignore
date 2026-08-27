@@ -35,3 +35,18 @@
 # Logs and temporary files
 *.log
 *.tmp
+/flutter/pi_go_app/android/app/google-services.json
+firebase-service-account*.json
+
+# Local Apple provisioning profiles (device UDIDs and signing metadata)
+/profile/
+*.mobileprovision
+*.provisionprofile
+# Flatpak staging output
+/flatpak/payload/
+/build/flatpak-linux/
+# Generated Apple build trees and published package artifacts
+/flutter/pi_go_app/ios/build/
+/flutter/pi_go_app/macos/build/
+/s3/ios/*.ipa
+

@@ -100,10 +100,7 @@ func (m sessionPicker) View() string {
 	lines := []string{cyan + " Resume session " + reset, strings.Repeat("─", width), dim + "↑/↓ select  Enter resume  Esc cancel" + reset, ""}
 	for index := start; index < end; index++ {
 		entry := m.entries[index]
-		name := entry.ID
-		if entry.Name != nil && strings.TrimSpace(*entry.Name) != "" {
-			name = *entry.Name
-		}
+		name := entry.LastMessageTime.Local().Format("2006-01-02 15:04")
 		marker, color := "  ", ""
 		if index == m.selected {
 			marker, color = "> ", green
@@ -116,13 +113,13 @@ func (m sessionPicker) View() string {
 			padding = 1
 		}
 		lines = append(lines, color+marker+label+strings.Repeat(" ", padding)+when+reset)
-		preview := entry.Preview
+		preview := entry.Summary
 		if preview == "" {
-			preview = "(no messages)"
+			preview = "No completed turn summary yet."
 		}
 		lines = append(lines, dim+"    “"+truncateOneLine(preview, width-7)+"”"+reset)
 	}
-	lines = append(lines, "", dim+fmt.Sprintf("%d sessions · newest UUIDv7 first", len(m.entries))+reset)
+	lines = append(lines, "", dim+fmt.Sprintf("%d sessions · newest first", len(m.entries))+reset)
 	return strings.Join(lines, "\n")
 }
 

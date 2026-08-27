@@ -1,0 +1,26 @@
+{
+  "name": "forge-worker-push",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Authenticated Forge device/agent pairing and APNs push relay",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "db:migrate:local": "wrangler d1 migrations apply forge-push --local",
+    "db:migrate:remote": "wrangler d1 migrations apply forge-push --remote"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-pool-workers": "^0.22.0",
+    "@cloudflare/workers-types": "^5.20260822.1",
+    "typescript": "^5.9.3",
+    "vitest": "^4.1.11",
+    "wrangler": "^4.125.0"
+  }
+}

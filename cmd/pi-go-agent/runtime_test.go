@@ -2,6 +2,11 @@ package main
 
 import (
 	"context"
+	"errors"
+	"fmt"
+	"net/http"
+	"os"
+	"path/filepath"
 	"sync"
 	"testing"
 	"time"
@@ -9,6 +14,71 @@ import (
 	"github.com/peterw22/pi-go/internal/agent"
 	"github.com/peterw22/pi-go/internal/session"
 )
+
+type immediateTestProvider struct{}
+
+func (immediateTestProvider) Stream(context.Context, agent.Request) (<-chan agent.ProviderEvent, <-chan error) {
+	events := make(chan agent.ProviderEvent, 2)
+	events <- agent.ProviderEvent{Type: agent.ProviderTextDelta, Delta: "done"}
+	events <- agent.ProviderEvent{Type: agent.ProviderDone, StopReason: "stop"}
+	close(events)
+	errs := make(chan error)
+	close(errs)
+	return events, errs
+}
+
+func TestDraftSessionDoesNotPersistUntilFirstPrompt(t *testing.T) {
+	root := t.TempDir()
+	id, err := session.NewID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	core, err := agent.New(agent.Config{Model: "test", Thinking: "low", WorkingDirectory: root, Provider: immediateTestProvider{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtime := newDraftSessionRuntime(id, root, core)
+	defer runtime.close()
+
+	subscriber := newSubscriber(nil)
+	runtime.subscribe(subscriber)
+	drainSubscriber(subscriber)
+	if err := runtime.setModel("changed"); err != nil {
+		t.Fatal(err)
+	}
+	entries, err := session.List(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("draft session was persisted on attach/settings change: %#v", entries)
+	}
+	if _, err := session.Latest(root); !os.IsNotExist(err) {
+		t.Fatalf("latest exists before first prompt: %v", err)
+	}
+	if err := runtime.StartCompaction("compact", ""); err == nil {
+		t.Fatal("empty draft session accepted compaction")
+	}
+
+	if err := runtime.StartPrompt("first", []agent.ContentBlock{{Type: "text", Text: "hello"}}); err != nil {
+		t.Fatal(err)
+	}
+	waitRuntimeIdle(t, runtime)
+	entries, err = session.List(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].ID != id {
+		t.Fatalf("promoted sessions = %#v, want %s", entries, id)
+	}
+	latest, err := session.Latest(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if filepath.Base(latest) != id+".jsonl" {
+		t.Fatalf("latest = %q", latest)
+	}
+}
 
 type detachedTestProvider struct {
 	started chan struct{}
@@ -142,7 +212,7 @@ func TestDetachedBashLikeToolContinuesAfterDisconnect(t *testing.T) {
 type runtimeDenyGuard struct{}
 
 func (runtimeDenyGuard) Check(context.Context, agent.GuardRequest) agent.GuardDecision {
-	return agent.GuardDecision{Reason: "needs approval", Description: "guarded tool"}
+	return agent.GuardDecision{Reason: "needs approval", Description: "guarded tool", NotificationSummary: "This operation requires safety approval."}
 }
 
 func TestPendingApprovalIsCaughtUpAndFirstResponseWins(t *testing.T) {
@@ -192,6 +262,20 @@ func TestPendingApprovalIsCaughtUpAndFirstResponseWins(t *testing.T) {
 	}
 	if !runtime.ResolveApproval(approvalID, false) {
 		t.Fatal("first approval response failed")
+	}
+	for index, subscriber := range []*subscriber{first, second} {
+		resolved := false
+		for len(subscriber.responses) > 0 {
+			outbound := <-subscriber.responses
+			if outbound.response.Event != nil &&
+				outbound.response.Event.Type == agent.EventApprovalResolved &&
+				outbound.response.Event.ApprovalID == approvalID {
+				resolved = true
+			}
+		}
+		if !resolved {
+			t.Fatalf("subscriber %d did not receive approval resolution", index+1)
+		}
 	}
 	if runtime.ResolveApproval(approvalID, true) {
 		t.Fatal("second approval response unexpectedly won")
@@ -376,6 +460,151 @@ func TestIndependentSessionRuntimesExecuteConcurrently(t *testing.T) {
 	}
 }
 
+func TestTranscriptPageReturnsLastMessagesAndCursor(t *testing.T) {
+	messages := make([]agent.Message, 0, 120)
+	for index := 0; index < 60; index++ {
+		messages = append(messages,
+			agent.Message{Role: agent.RoleUser, Content: []agent.ContentBlock{{Type: "text", Text: fmt.Sprintf("question-%d", index)}}},
+			agent.Message{Role: agent.RoleAssistant, Content: []agent.ContentBlock{{Type: "text", Text: fmt.Sprintf("answer-%d", index)}}},
+		)
+	}
+	page, before, more := transcriptPage(messages, len(messages), 25)
+	if len(page) != 25 || before != 95 || !more {
+		t.Fatalf("first page len=%d before=%d more=%v", len(page), before, more)
+	}
+	if got := page[0].Content[0].Text; got != "answer-47" {
+		t.Fatalf("first page starts with %q", got)
+	}
+	page, before, more = transcriptPage(messages, before, 25)
+	if len(page) != 25 || before != 70 || !more {
+		t.Fatalf("second page len=%d before=%d more=%v", len(page), before, more)
+	}
+	page, before, more = transcriptPage(messages, 20, 25)
+	if len(page) != 20 || before != 0 || more {
+		t.Fatalf("final page len=%d before=%d more=%v", len(page), before, more)
+	}
+}
+
+func TestSessionStatusBroadcastReachesAllServerSubscribers(t *testing.T) {
+	provider := newDetachedTestProvider()
+	runtime, root := testSessionRuntime(t, provider)
+	registry := newRuntimeRegistry(root, runtime, func(string, string, string, []agent.Message, agent.Usage) (*agent.Agent, error) {
+		return nil, errors.New("unused")
+	})
+	defer registry.Shutdown()
+	first, second := newSubscriber(nil), newSubscriber(nil)
+	registry.subscribe(first)
+	registry.subscribe(second)
+
+	if err := runtime.StartPrompt("status", []agent.ContentBlock{{Type: "text", Text: "wait"}}); err != nil {
+		t.Fatal(err)
+	}
+	<-provider.started
+	assertStatus := func(subscriber *subscriber, active, waiting bool) {
+		t.Helper()
+		select {
+		case outbound := <-subscriber.responses:
+			response := outbound.response
+			if response.Type != "session_status" || response.Session != runtime.id || response.Active != active || response.WaitingInput != waiting {
+				t.Fatalf("status = %#v", response)
+			}
+		case <-time.After(time.Second):
+			t.Fatal("timed out waiting for session status")
+		}
+	}
+	assertStatus(first, true, false)
+	assertStatus(second, true, false)
+
+	runtime.publish("status", agent.Event{Type: agent.EventApprovalRequired, ApprovalID: "approval"})
+	// Discard each runtime-local event and assert the global waiting push.
+	assertStatus(first, true, true)
+	assertStatus(second, true, true)
+
+	close(provider.release)
+	waitRuntimeIdle(t, runtime)
+	assertStatus(first, false, false)
+	assertStatus(second, false, false)
+}
+
+func TestSessionListPageReturnsFiveAndCursor(t *testing.T) {
+	registry := &runtimeRegistry{}
+	// ListPage delegates metadata loading to List, so cover its pure page rules
+	// through a temporary registry populated by six persisted sessions.
+	provider := newDetachedTestProvider()
+	initial, root := testSessionRuntime(t, provider)
+	registry = newRuntimeRegistry(root, initial, func(string, string, string, []agent.Message, agent.Usage) (*agent.Agent, error) {
+		return nil, errors.New("unused")
+	})
+	defer registry.Shutdown()
+	for index := 0; index < 6; index++ {
+		store, err := session.New(root, "model", "high")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := store.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	page, offset, more, err := registry.ListPage(0, 5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page) != 5 || offset != 5 || !more {
+		t.Fatalf("first page len=%d offset=%d more=%v", len(page), offset, more)
+	}
+	page, offset, more, err = registry.ListPage(offset, 5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page) != 2 || offset != 7 || more {
+		t.Fatalf("second page len=%d offset=%d more=%v", len(page), offset, more)
+	}
+}
+
+func TestSessionListMarksOnlyBusyRuntimeActive(t *testing.T) {
+	provider := newDetachedTestProvider()
+	initial, root := testSessionRuntime(t, provider)
+	factory := func(workspace, model, thinking string, messages []agent.Message, usage agent.Usage) (*agent.Agent, error) {
+		core, err := agent.New(agent.Config{Model: model, Thinking: thinking, WorkingDirectory: workspace, Provider: provider})
+		if err == nil {
+			core.Restore(messages, model, thinking, usage)
+		}
+		return core, err
+	}
+	registry := newRuntimeRegistry(root, initial, factory)
+	defer registry.Shutdown()
+	second, err := registry.New(initial)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := second.StartPrompt("active", []agent.ContentBlock{{Type: "text", Text: "wait"}}); err != nil {
+		t.Fatal(err)
+	}
+	<-provider.started
+	entries, err := registry.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	active := map[string]bool{}
+	for _, entry := range entries {
+		active[entry.ID] = entry.Active
+	}
+	if active[initial.id] || !active[second.id] {
+		t.Fatalf("active sessions = %#v", active)
+	}
+	close(provider.release)
+	waitRuntimeIdle(t, second)
+	entries, err = registry.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		if entry.Active {
+			t.Fatalf("session remained active after completion: %#v", entry)
+		}
+	}
+}
+
 func TestYOLOMutationPersistsAndIsRejectedWhileBusy(t *testing.T) {
 	provider := newDetachedTestProvider()
 	runtime, _ := testSessionRuntime(t, provider)
@@ -410,5 +639,102 @@ func TestSlowSubscriberIsRemovedWithoutBlockingRuntime(t *testing.T) {
 	case <-slow.done:
 	default:
 		t.Fatal("slow subscriber was not removed")
+	}
+}
+
+func TestClassifierConfigurationProtocolPersistsSelection(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("PI_GO_CONFIG_DIR", root)
+	t.Setenv("PI_GO_PUSH_DISABLED", "true")
+	settings, err := newClassifierSettings()
+	if err != nil {
+		t.Fatal(err)
+	}
+	previousSettings, previousAuth := runtimeClassifierSettings, runtimeAuthManager
+	runtimeClassifierSettings = settings
+	runtimeAuthManager = newCodexAuthManagerAt(
+		filepath.Join(root, "auth.json"), defaultCodexAuthEndpoints, http.DefaultClient,
+	)
+	defer func() {
+		runtimeClassifierSettings = previousSettings
+		runtimeAuthManager = previousAuth
+	}()
+
+	runtime, sessionRoot := testSessionRuntime(t, immediateTestProvider{})
+	registry := newRuntimeRegistry(sessionRoot, runtime, func(string, string, string, []agent.Message, agent.Usage) (*agent.Agent, error) {
+		return nil, errors.New("unused")
+	})
+	defer registry.Shutdown()
+	client := &clientConnection{registry: registry, runtime: runtime, subscriber: newSubscriber(nil)}
+
+	if err := client.handle(backendCommand{ID: "get", Type: "get_classifier_config"}); err != nil {
+		t.Fatal(err)
+	}
+	if response := (<-client.subscriber.responses).response; response.ClassifierModel != defaultClassifierModel {
+		t.Fatalf("initial response = %#v", response)
+	}
+	if err := client.handle(backendCommand{ID: "set", Type: "set_classifier_model", ClassifierModel: "gpt-5.6-sol"}); err != nil {
+		t.Fatal(err)
+	}
+	if response := (<-client.subscriber.responses).response; response.ClassifierModel != "gpt-5.6-sol" {
+		t.Fatalf("set response = %#v", response)
+	}
+	reloaded, err := newClassifierSettings()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reloaded.Model() != "gpt-5.6-sol" {
+		t.Fatalf("persisted classifier = %q", reloaded.Model())
+	}
+	if err := client.handle(backendCommand{ID: "bad", Type: "set_classifier_model", ClassifierModel: "unknown-model"}); err == nil {
+		t.Fatal("unknown classifier model accepted")
+	}
+}
+
+func TestApprovalEventForwardsNotificationSummaryToPush(t *testing.T) {
+	runtime, _ := testSessionRuntime(t, immediateTestProvider{})
+	defer runtime.close()
+	var session, summary string
+	runtime.approvalPush = func(gotSession, gotSummary string) {
+		session, summary = gotSession, gotSummary
+	}
+	runtime.publish("run", agent.Event{
+		Type:                agent.EventApprovalRequired,
+		NotificationSummary: "This operation may upload workspace files.",
+	})
+	if session != runtime.id || summary != "This operation may upload workspace files." {
+		t.Fatalf("push session=%q summary=%q", session, summary)
+	}
+}
+
+func TestCompletedTurnPersistsAndPushesSameClassifierSummary(t *testing.T) {
+	runtime, root := testSessionRuntime(t, immediateTestProvider{})
+	defer runtime.close()
+	runtime.summarizeTurn = func(_ context.Context, message agent.Message) (string, error) {
+		if len(message.Content) == 0 || message.Content[0].Text != "done" {
+			t.Fatalf("assistant result = %#v", message)
+		}
+		return "Implemented the requested session changes.", nil
+	}
+	pushed := make(chan string, 1)
+	runtime.completionPush = func(_ string, summary string) { pushed <- summary }
+	if err := runtime.StartPrompt("summary", []agent.ContentBlock{{Type: "text", Text: "work"}}); err != nil {
+		t.Fatal(err)
+	}
+	waitRuntimeIdle(t, runtime)
+	select {
+	case summary := <-pushed:
+		if summary != "Implemented the requested session changes." {
+			t.Fatalf("push summary = %q", summary)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("completion summary was not pushed")
+	}
+	entries, err := session.List(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].Summary != "Implemented the requested session changes." {
+		t.Fatalf("session entries = %#v", entries)
 	}
 }

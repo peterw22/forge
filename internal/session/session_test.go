@@ -1,6 +1,7 @@
 package session
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"sync"
@@ -158,10 +159,67 @@ func TestListSortsUUIDv7DescendingAndReadsMetadata(t *testing.T) {
 	if entries[0].Name == nil || *entries[0].Name != "Named work" {
 		t.Fatalf("name = %#v", entries[0].Name)
 	}
-	if entries[0].Preview != "last prompt" {
-		t.Fatalf("preview = %q", entries[0].Preview)
-	}
 	if got := entries[0].LastMessageTime; !got.Equal(time.UnixMilli(1720000000000)) {
 		t.Fatalf("time = %v", got)
+	}
+}
+
+func TestListPageReadsRequestedUUIDv7Window(t *testing.T) {
+	cwd := t.TempDir()
+	dir := filepath.Join(cwd, ".pi-go", "sessions")
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	for index := 0; index < 8; index++ {
+		id := fmt.Sprintf("01900000-%04x-7000-8000-000000000001", index)
+		body := fmt.Sprintf("{\"type\":\"session\",\"version\":1,\"name\":\"session-%d\",\"createdAt\":\"2024-01-01T00:00:00Z\"}\n", index)
+		if err := os.WriteFile(filepath.Join(dir, id+".jsonl"), []byte(body), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	entries, err := ListPage(cwd, 2, 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 3 {
+		t.Fatalf("entries = %d", len(entries))
+	}
+	want := []string{
+		"01900000-0005-7000-8000-000000000001",
+		"01900000-0004-7000-8000-000000000001",
+		"01900000-0003-7000-8000-000000000001",
+	}
+	for index := range want {
+		if entries[index].ID != want[index] {
+			t.Fatalf("entry %d = %q, want %q", index, entries[index].ID, want[index])
+		}
+	}
+}
+
+func TestListUsesLatestTurnSummary(t *testing.T) {
+	root := t.TempDir()
+	store, err := New(root, "model", "low")
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := store.ID()
+	if err := store.Append(agent.Message{Role: agent.RoleAssistant, Timestamp: 1000, Content: []agent.ContentBlock{{Type: "text", Text: "long raw assistant output"}}}, agent.Usage{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.AppendTurnSummary("Implemented encrypted notification summaries.", 2000); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	entries, err := List(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].ID != id || entries[0].Summary != "Implemented encrypted notification summaries." {
+		t.Fatalf("entries = %#v", entries)
+	}
+	if !entries[0].LastMessageTime.Equal(time.UnixMilli(2000)) {
+		t.Fatalf("summary time = %v", entries[0].LastMessageTime)
 	}
 }

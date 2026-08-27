@@ -1,20 +1,16 @@
 // pi-go-agent is the first runnable Go agent-core backend. It owns the agent
-// loop and built-in tools; it currently uses the existing Go Codex bridge as a
-// provider subprocess while that transport is being extracted into internal/providers.
+// loop, built-in tools, and persistent per-session Codex WebSocket transport.
 package main
 
 import (
-	"bufio"
 	"context"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
-	"io"
 	"net"
 	"os"
-	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"strings"
@@ -26,11 +22,6 @@ import (
 	"github.com/peterw22/pi-go/internal/session"
 )
 
-type codexProvider struct {
-	binary string
-	token  string
-}
-
 func main() {
 	var prompt, model, thinking, systemPrompt, cwd string
 	var serve bool
@@ -38,18 +29,24 @@ func main() {
 	var resume bool
 	var listenAddress string
 	var allowRemote bool
+	var authLogin, authLogout, printIdentity bool
+	var authorizedDevices string
 	flag.StringVar(&prompt, "prompt", "", "prompt to run")
 	flag.BoolVar(&serve, "serve", false, "run the JSONL agent-backend server")
 	flag.StringVar(&sessionPath, "session", "", "session JSONL path")
 	flag.BoolVar(&resume, "resume", false, "restore the session JSONL path")
 	flag.StringVar(&listenAddress, "listen", "", "serve JSONL over unix:///path, tcp://host:port, or ws://host:port/path")
 	flag.BoolVar(&allowRemote, "allow-remote", false, "allow binding TCP/WebSocket to a non-loopback address (unsafe without a trusted network)")
+	flag.BoolVar(&authLogin, "login", false, "sign in to OpenAI Codex using the OAuth device flow")
+	flag.BoolVar(&authLogout, "logout", false, "remove stored OpenAI Codex credentials")
+	flag.BoolVar(&printIdentity, "print-identity", false, "print the server P-256 identity and exit")
+	flag.StringVar(&authorizedDevices, "authorized-devices", "", "device whitelist for network listeners (default: $PI_GO_CONFIG_DIR/authorized-devices.json or ~/.pi-go/authorized-devices.json)")
 	flag.StringVar(&model, "model", "gpt-5.6-terra", "Codex model ID")
 	flag.StringVar(&thinking, "thinking", "high", "thinking level: off, minimal, low, medium, high, xhigh, max")
 	flag.StringVar(&systemPrompt, "system-prompt", "", "system prompt (defaults to the Pi Go coding-agent prompt)")
 	flag.StringVar(&cwd, "cwd", "", "working directory for built-in tools")
 	flag.Parse()
-	if prompt == "" && !serve && listenAddress == "" {
+	if prompt == "" && !serve && listenAddress == "" && !authLogin && !authLogout && !printIdentity {
 		fmt.Fprintln(os.Stderr, "--prompt must not be empty unless --serve is used")
 		os.Exit(2)
 	}
@@ -65,12 +62,79 @@ func main() {
 	if !customSystemPrompt {
 		systemPrompt = systemprompt.Default(cwd)
 	}
-	token, err := codexToken(model)
+	if printIdentity {
+		identity, identityErr := loadServerIdentity()
+		if identityErr != nil {
+			fmt.Fprintln(os.Stderr, identityErr)
+			os.Exit(1)
+		}
+		encoded, _ := json.Marshal(identity.PublicKey)
+		fmt.Printf("Agent ID: %s\nP-256 fingerprint: %s\nPublic JWK: %s\n", identity.AgentID, identity.Fingerprint, encoded)
+		return
+	}
+	var authPolicy *clientAuthPolicy
+	// Every TCP/WebSocket/Unix listener is an authentication boundary,
+	// including loopback listeners behind tunnels. Stdio --serve remains a
+	// trusted parent/child IPC mode for the local TUI and bundled helper.
+	if strings.TrimSpace(listenAddress) != "" && strings.TrimSpace(authorizedDevices) == "" {
+		defaultPath, pathErr := defaultAuthorizedDevicesPath()
+		if pathErr != nil {
+			fmt.Fprintln(os.Stderr, "remote listener authentication:", pathErr)
+			os.Exit(1)
+		}
+		authorizedDevices = defaultPath
+	}
+	if strings.TrimSpace(authorizedDevices) != "" {
+		var policyErr error
+		authPolicy, policyErr = loadClientAuthPolicy(authorizedDevices)
+		if policyErr != nil {
+			fmt.Fprintf(os.Stderr, "remote listener requires a valid device whitelist at %s: %v\n", authorizedDevices, policyErr)
+			os.Exit(1)
+		}
+		fmt.Fprintf(os.Stderr, "mutual P-256 authentication and AES-GCM encryption required; server fingerprint %s\n", authPolicy.identity.Fingerprint)
+	}
+	authManager, err := newCodexAuthManager()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
-		os.Exit(2)
+		os.Exit(1)
 	}
-	provider := codexProvider{binary: codexBinary(), token: token}
+	runtimeAuthManager = authManager
+	if authLogout {
+		if err := authManager.Logout(); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		fmt.Println("Signed out of OpenAI Codex")
+		return
+	}
+	if authLogin {
+		ctx, beginErr := authManager.BeginLogin()
+		if beginErr != nil {
+			fmt.Fprintln(os.Stderr, beginErr)
+			os.Exit(1)
+		}
+		defer authManager.EndLogin()
+		status, loginErr := authManager.LoginDeviceCode(ctx, func(code codexDeviceCode) {
+			fmt.Printf("Open %s and enter code %s\n", code.VerificationURI, code.UserCode)
+		})
+		if loginErr != nil {
+			fmt.Fprintln(os.Stderr, loginErr)
+			os.Exit(1)
+		}
+		fmt.Printf("Signed in to OpenAI Codex account %s\n", status.AccountID)
+		return
+	}
+	codexProvider := newCodexProvider(defaultCodexEndpoint, authManager.Token)
+	defer codexProvider.Close()
+	apiProvider := newAPIProvider(authManager.APIRuntimeConfig)
+	provider := &providerRouter{codex: codexProvider, api: apiProvider}
+	classifierConfig, err := newClassifierSettings()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "classifier settings:", err)
+		os.Exit(1)
+	}
+	runtimeClassifierSettings = classifierConfig
+	runtimeClassifierProvider = provider
 	allowApproval := serve || listenAddress != ""
 	factory := func(workspace, selectedModel, selectedThinking string, messages []agent.Message, usage agent.Usage) (*agent.Agent, error) {
 		if selectedModel == "" {
@@ -87,7 +151,7 @@ func main() {
 			Model: selectedModel, Thinking: selectedThinking,
 			SystemPrompt: promptForWorkspace, WorkingDirectory: workspace,
 			Provider: provider, Tools: builtInTools(workspace), ParallelTools: true,
-			ToolGuard: newSafetyGate(provider), AllowApproval: allowApproval,
+			ToolGuard: newSafetyGate(provider, classifierConfig.Model), AllowApproval: allowApproval,
 		})
 		if createErr == nil && (len(messages) > 0 || usage.TotalTokens > 0) {
 			core.Restore(messages, selectedModel, selectedThinking, usage)
@@ -95,6 +159,7 @@ func main() {
 		return core, createErr
 	}
 	if serve || listenAddress != "" {
+		var err error
 		var store *session.Store
 		var messages []agent.Message
 		var usage agent.Usage
@@ -117,22 +182,33 @@ func main() {
 				selectedThinking = header.Thinking
 			}
 			selectedYOLO = header.YOLO
-		} else {
-			store, err = session.New(cwd, model, thinking)
-			if err != nil {
-				fmt.Fprintln(os.Stderr, err)
-				os.Exit(1)
-			}
 		}
 		core, err := factory(workspace, selectedModel, selectedThinking, messages, usage)
 		if err != nil {
-			_ = store.Close()
+			if store != nil {
+				_ = store.Close()
+			}
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
 		}
 		core.SetYOLO(selectedYOLO)
-		initial := newSessionRuntime(store.ID(), core, session.NewController(cwd, store))
+		var initial *sessionRuntime
+		if store != nil {
+			initial = newSessionRuntime(store.ID(), core, session.NewController(cwd, store))
+		} else {
+			draftID, idErr := session.NewID()
+			if idErr != nil {
+				fmt.Fprintln(os.Stderr, idErr)
+				os.Exit(1)
+			}
+			initial = newDraftSessionRuntime(draftID, cwd, core)
+		}
 		registry := newRuntimeRegistry(cwd, initial, factory)
+		if err := registry.enableCron(); err != nil {
+			registry.Shutdown()
+			fmt.Fprintln(os.Stderr, "cron scheduler:", err)
+			os.Exit(1)
+		}
 		defer registry.Shutdown()
 		signals := make(chan os.Signal, 1)
 		signal.Notify(signals, syscall.SIGINT, syscall.SIGTERM)
@@ -149,15 +225,15 @@ func main() {
 		}()
 		if listenAddress != "" {
 			if strings.HasPrefix(listenAddress, "ws://") {
-				err = serveWebSocket(registry, listenAddress, allowRemote)
+				err = serveWebSocket(registry, listenAddress, allowRemote, authPolicy)
 			} else {
-				err = serveSocket(registry, listenAddress, allowRemote)
+				err = serveSocket(registry, listenAddress, allowRemote, authPolicy)
 			}
 			if err != nil {
 				fmt.Fprintln(os.Stderr, err)
 				os.Exit(1)
 			}
-		} else if err := serveClient(registry, os.Stdin, os.Stdout, nil); err != nil && !errors.Is(err, errBackendShutdown) {
+		} else if err := serveClient(registry, os.Stdin, os.Stdout, nil, nil); err != nil && !errors.Is(err, errBackendShutdown) {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
 		}
@@ -168,6 +244,8 @@ func main() {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
+	core.SetSessionID("standalone")
+	defer core.CloseProviderSession()
 	encoder := json.NewEncoder(os.Stdout)
 	if err := core.Run(context.Background(), prompt, func(event agent.Event) { _ = encoder.Encode(event) }); err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -175,45 +253,117 @@ func main() {
 	}
 }
 
-// codexToken uses an explicitly supplied token when present. Otherwise it
-// delegates OAuth refresh to the installed Pi CLI, keeping credentials out of
-// this agent's flags, files, and JSONL output.
 type backendCommand struct {
-	ID                 string               `json:"id,omitempty"`
-	Type               string               `json:"type"`
-	Message            string               `json:"message,omitempty"`
-	Level              string               `json:"level,omitempty"`
-	Model              string               `json:"model,omitempty"`
-	Name               *string              `json:"name"`
-	Session            string               `json:"session,omitempty"`
-	CWD                string               `json:"cwd,omitempty"`
-	Content            []agent.ContentBlock `json:"content,omitempty"`
-	CustomInstructions string               `json:"customInstructions,omitempty"`
-	ApprovalID         string               `json:"approvalId,omitempty"`
-	Approved           bool                 `json:"approved,omitempty"`
-	Enabled            bool                 `json:"enabled"`
+	ID                  string               `json:"id,omitempty"`
+	Type                string               `json:"type"`
+	Message             string               `json:"message,omitempty"`
+	Level               string               `json:"level,omitempty"`
+	Model               string               `json:"model,omitempty"`
+	ClassifierModel     string               `json:"classifierModel,omitempty"`
+	Name                *string              `json:"name"`
+	Session             string               `json:"session,omitempty"`
+	CWD                 string               `json:"cwd,omitempty"`
+	Content             []agent.ContentBlock `json:"content,omitempty"`
+	CustomInstructions  string               `json:"customInstructions,omitempty"`
+	ApprovalID          string               `json:"approvalId,omitempty"`
+	Approved            bool                 `json:"approved,omitempty"`
+	Enabled             bool                 `json:"enabled"`
+	Provider            string               `json:"provider,omitempty"`
+	ProviderName        string               `json:"providerName,omitempty"`
+	DeleteProvider      bool                 `json:"deleteProvider,omitempty"`
+	APIKey              string               `json:"apiKey,omitempty"`
+	ClearAPIKey         bool                 `json:"clearApiKey,omitempty"`
+	Protocol            string               `json:"protocol,omitempty"`
+	OpenAIBaseURL       string               `json:"openaiBaseUrl,omitempty"`
+	AnthropicBaseURL    string               `json:"anthropicBaseUrl,omitempty"`
+	DefaultModel        string               `json:"defaultModel,omitempty"`
+	Models              []string             `json:"models,omitempty"`
+	Platform            string               `json:"platform,omitempty"`
+	DeviceID            string               `json:"deviceId,omitempty"`
+	DeviceFingerprint   string               `json:"deviceFingerprint,omitempty"`
+	ConnectionChallenge string               `json:"connectionChallenge,omitempty"`
+	PairingID           string               `json:"pairingId,omitempty"`
+	Before              int                  `json:"before,omitempty"`
+	Limit               int                  `json:"limit,omitempty"`
+	AuthProtocol        string               `json:"authProtocol,omitempty"`
+	ConnectionID        string               `json:"connectionId,omitempty"`
+	ClientNonce         string               `json:"clientNonce,omitempty"`
+	ServerNonce         string               `json:"serverNonce,omitempty"`
+	DeviceSignature     string               `json:"deviceSignature,omitempty"`
+	Signature           string               `json:"signature,omitempty"`
+	ExpiresAt           int64                `json:"authExpiresAt,omitempty"`
+	ClientEphemeralKey  pushJWK              `json:"clientEphemeralKey,omitempty"`
+	ServerEphemeralKey  pushJWK              `json:"serverEphemeralKey,omitempty"`
+	Cipher              string               `json:"cipher,omitempty"`
+	EncryptedVersion    int                  `json:"version,omitempty"`
+	EncryptedSequence   uint64               `json:"sequence"`
+	Ciphertext          string               `json:"ciphertext,omitempty"`
 }
 
 type backendResponse struct {
-	ID       string          `json:"id,omitempty"`
-	Type     string          `json:"type"`
-	Command  string          `json:"command,omitempty"`
-	Success  bool            `json:"success,omitempty"`
-	Active   bool            `json:"active,omitempty"`
-	Event    *agent.Event    `json:"event,omitempty"`
-	Error    string          `json:"error,omitempty"`
-	State    *agent.State    `json:"state,omitempty"`
-	Sessions []session.Entry `json:"sessions,omitempty"`
-	Model    string          `json:"model,omitempty"`
-	Thinking string          `json:"thinking,omitempty"`
-	Session  string          `json:"session,omitempty"`
-	CWD      string          `json:"cwd,omitempty"`
-	YOLO     *bool           `json:"yolo,omitempty"`
+	ID                 string              `json:"id,omitempty"`
+	Type               string              `json:"type"`
+	Command            string              `json:"command,omitempty"`
+	Success            bool                `json:"success,omitempty"`
+	Active             bool                `json:"active,omitempty"`
+	WaitingInput       bool                `json:"waitingInput,omitempty"`
+	Event              *agent.Event        `json:"event,omitempty"`
+	Error              string              `json:"error,omitempty"`
+	State              *agent.State        `json:"state,omitempty"`
+	Sessions           []session.Entry     `json:"sessions,omitempty"`
+	Model              string              `json:"model,omitempty"`
+	Thinking           string              `json:"thinking,omitempty"`
+	ClassifierModel    string              `json:"classifierModel,omitempty"`
+	Session            string              `json:"session,omitempty"`
+	CWD                string              `json:"cwd,omitempty"`
+	YOLO               *bool               `json:"yolo,omitempty"`
+	Authenticated      *bool               `json:"authenticated,omitempty"`
+	AccountID          string              `json:"accountId,omitempty"`
+	ExpiresAt          int64               `json:"expiresAt,omitempty"`
+	UserCode           string              `json:"userCode,omitempty"`
+	VerificationURI    string              `json:"verificationUri,omitempty"`
+	Provider           string              `json:"provider,omitempty"`
+	ProviderConfigs    []apiPublicConfig   `json:"providerConfigs,omitempty"`
+	ProviderConfig     *apiPublicConfig    `json:"providerConfig,omitempty"`
+	Models             []modelInfo         `json:"models,omitempty"`
+	AgentID            string              `json:"agentId,omitempty"`
+	AgentPublicKey     *pushJWK            `json:"agentPublicKey,omitempty"`
+	AgentFingerprint   string              `json:"agentFingerprint,omitempty"`
+	ConnectionProof    string              `json:"connectionProof,omitempty"`
+	DeviceID           string              `json:"deviceId,omitempty"`
+	PairingID          string              `json:"pairingId,omitempty"`
+	VerificationCode   string              `json:"verificationCode,omitempty"`
+	Scopes             []string            `json:"scopes,omitempty"`
+	PushAuthorizations []pushAuthorization `json:"pushAuthorizations,omitempty"`
+	PairingExpiresAt   int64               `json:"pairingExpiresAt,omitempty"`
+	PushAuthorized     bool                `json:"pushAuthorized,omitempty"`
+	PushKeyID          string              `json:"pushKeyId,omitempty"`
+	PushKey            string              `json:"pushKey,omitempty"`
+	PushKeySignature   string              `json:"pushKeySignature,omitempty"`
+	HistoryMessages    []agent.Message     `json:"historyMessages,omitempty"`
+	HistoryBefore      int                 `json:"historyBefore,omitempty"`
+	HistoryHasMore     bool                `json:"historyHasMore,omitempty"`
+	SessionsOffset     int                 `json:"sessionsOffset,omitempty"`
+	SessionsHasMore    bool                `json:"sessionsHasMore,omitempty"`
+	ProtocolVersion    string              `json:"authProtocol,omitempty"`
+	ConnectionID       string              `json:"connectionId,omitempty"`
+	ClientNonce        string              `json:"clientNonce,omitempty"`
+	ServerNonce        string              `json:"serverNonce,omitempty"`
+	DeviceFingerprint  string              `json:"deviceFingerprint,omitempty"`
+	ServerSignature    string              `json:"serverSignature,omitempty"`
+	ServerEphemeralKey *pushJWK            `json:"serverEphemeralKey,omitempty"`
+	Cipher             string              `json:"cipher,omitempty"`
+	EncryptedVersion   int                 `json:"version,omitempty"`
+	EncryptedSequence  uint64              `json:"sequence"`
+	Ciphertext         string              `json:"ciphertext,omitempty"`
 }
 
 var errBackendShutdown = errors.New("agent backend shutdown")
 
-func serveSocket(registry *runtimeRegistry, endpoint string, allowRemote bool) error {
+func serveSocket(registry *runtimeRegistry, endpoint string, allowRemote bool, authPolicy *clientAuthPolicy) error {
+	if authPolicy == nil {
+		return errors.New("TCP and Unix listeners require an authorized device whitelist")
+	}
 	network, address, cleanup, err := socketEndpoint(endpoint, allowRemote)
 	if err != nil {
 		return err
@@ -248,7 +398,7 @@ func serveSocket(registry *runtimeRegistry, endpoint string, allowRemote bool) e
 		clients.Add(1)
 		go func(connection net.Conn) {
 			defer clients.Done()
-			err := serveClient(registry, connection, connection, connection)
+			err := serveClient(registry, connection, connection, connection, authPolicy)
 			if err != nil && !errors.Is(err, errBackendShutdown) {
 				fmt.Fprintln(os.Stderr, "agent client disconnected:", err)
 			}
@@ -286,9 +436,6 @@ func socketEndpoint(endpoint string, allowRemote bool) (network, address string,
 	}
 }
 
-// codexToken uses an explicitly supplied token when present. Otherwise it
-// delegates OAuth refresh to the installed Pi CLI, keeping credentials out of
-// this agent's flags, files, and JSONL output.
 func promptContent(message string, attachments []agent.ContentBlock) ([]agent.ContentBlock, error) {
 	var content []agent.ContentBlock
 	if strings.TrimSpace(message) != "" {
@@ -349,146 +496,4 @@ func validThinking(level string) bool {
 		}
 	}
 	return false
-}
-
-func codexToken(model string) (string, error) {
-	if token := strings.TrimSpace(os.Getenv("PI_GO_CODEX_TOKEN")); token != "" {
-		return token, nil
-	}
-	command := exec.Command("pi", "auth", "print-bearer-token", "--provider", "openai-codex", "--model", model, "--min-expiry", "5m")
-	output, err := command.Output()
-	if err != nil {
-		return "", fmt.Errorf("get Codex credential from Pi CLI: %w", err)
-	}
-	token := strings.TrimSpace(string(output))
-	if token == "" {
-		return "", errors.New("Pi CLI returned an empty Codex credential")
-	}
-	return token, nil
-}
-
-func codexBinary() string {
-	if path := os.Getenv("PI_GO_CODEX_BIN"); path != "" {
-		return path
-	}
-	if executable, err := os.Executable(); err == nil {
-		return filepath.Join(filepath.Dir(executable), "pi-go-codex")
-	}
-	return "pi-go-codex"
-}
-
-func (p codexProvider) Stream(ctx context.Context, request agent.Request) (<-chan agent.ProviderEvent, <-chan error) {
-	events := make(chan agent.ProviderEvent)
-	errs := make(chan error, 1)
-	go func() {
-		defer close(events)
-		defer close(errs)
-		cmd := exec.CommandContext(ctx, p.binary, "--provider")
-		cmd.Env = append(os.Environ(), "PI_GO_CODEX_TOKEN="+p.token)
-		stdin, err := cmd.StdinPipe()
-		if err != nil {
-			errs <- err
-			return
-		}
-		stdout, err := cmd.StdoutPipe()
-		if err != nil {
-			errs <- err
-			return
-		}
-		var stderr strings.Builder
-		cmd.Stderr = &stderr
-		if err := cmd.Start(); err != nil {
-			errs <- err
-			return
-		}
-		if err := json.NewEncoder(stdin).Encode(providerRequest(request)); err != nil {
-			_ = stdin.Close()
-			_ = cmd.Wait()
-			errs <- err
-			return
-		}
-		if err := consumeBridge(stdout, stdin, events); err != nil {
-			_ = stdin.Close()
-			_ = cmd.Wait()
-			errs <- err
-			return
-		}
-		if err := cmd.Wait(); err != nil {
-			if ctx.Err() != nil {
-				errs <- ctx.Err()
-			} else {
-				errs <- fmt.Errorf("Codex bridge exited: %w: %s", err, strings.TrimSpace(stderr.String()))
-			}
-		}
-	}()
-	return events, errs
-}
-
-func providerRequest(request agent.Request) map[string]any {
-	messages := make([]map[string]any, 0, len(request.Messages))
-	for _, message := range request.Messages {
-		messages = append(messages, map[string]any{
-			"role": string(message.Role), "content": message.Content, "toolCallId": message.ToolCallID,
-			"toolName": message.ToolName, "isError": message.IsError,
-		})
-	}
-	tools := make([]map[string]any, 0, len(request.Tools))
-	for _, tool := range request.Tools {
-		tools = append(tools, map[string]any{"name": tool.Name, "description": tool.Description, "parameters": tool.Parameters})
-	}
-	return map[string]any{"model": request.Model, "systemPrompt": request.SystemPrompt, "messages": messages, "tools": tools, "reasoning": request.Thinking}
-}
-
-func consumeBridge(output io.Reader, input io.WriteCloser, events chan<- agent.ProviderEvent) error {
-	defer input.Close()
-	scanner := bufio.NewScanner(output)
-	scanner.Buffer(make([]byte, 64*1024), 4*1024*1024)
-	for scanner.Scan() {
-		var event struct {
-			Type      string         `json:"type"`
-			Payload   any            `json:"payload"`
-			Delta     string         `json:"delta"`
-			ID        string         `json:"id"`
-			Name      string         `json:"name"`
-			Arguments map[string]any `json:"arguments"`
-			Reason    string         `json:"reason"`
-			Message   string         `json:"message"`
-			Transport string         `json:"transport"`
-			Usage     struct {
-				Input        int `json:"input_tokens"`
-				Output       int `json:"output_tokens"`
-				Total        int `json:"total_tokens"`
-				InputDetails struct {
-					Cached int `json:"cached_tokens"`
-				} `json:"input_tokens_details"`
-			} `json:"usage"`
-		}
-		if err := json.Unmarshal(scanner.Bytes(), &event); err != nil {
-			return fmt.Errorf("decode Codex bridge event: %w", err)
-		}
-		switch event.Type {
-		case "payload":
-			if err := json.NewEncoder(input).Encode(map[string]any{"type": "payload", "payload": event.Payload}); err != nil {
-				return err
-			}
-		case "start":
-			if event.Transport != "" {
-				events <- agent.ProviderEvent{Type: agent.ProviderTransport, Transport: event.Transport}
-			}
-		case "thinking_delta":
-			events <- agent.ProviderEvent{Type: agent.ProviderThinkingDelta, Delta: event.Delta}
-		case "text_delta":
-			events <- agent.ProviderEvent{Type: agent.ProviderTextDelta, Delta: event.Delta}
-		case "toolcall_end":
-			events <- agent.ProviderEvent{Type: agent.ProviderToolCall, ToolCall: agent.ContentBlock{Type: "toolCall", ID: event.ID, Name: event.Name, Arguments: event.Arguments}}
-		case "done":
-			events <- agent.ProviderEvent{Type: agent.ProviderDone, StopReason: event.Reason, Usage: agent.Usage{Input: event.Usage.Input, Output: event.Usage.Output, CacheRead: event.Usage.InputDetails.Cached, TotalTokens: event.Usage.Total}}
-		case "error":
-			return errors.New(event.Message)
-		}
-	}
-	if err := scanner.Err(); err != nil {
-		return err
-	}
-	return nil
 }

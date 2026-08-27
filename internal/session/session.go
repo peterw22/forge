@@ -36,7 +36,8 @@ type Entry struct {
 	Path            string    `json:"-"`
 	Name            *string   `json:"name"`
 	LastMessageTime time.Time `json:"lastMessageTime"`
-	Preview         string    `json:"preview"`
+	Summary         string    `json:"summary"`
+	Active          bool      `json:"active"`
 }
 
 type Controller struct {
@@ -50,6 +51,11 @@ func (controller *Controller) Append(message agent.Message, usage agent.Usage) e
 	controller.mu.Lock()
 	defer controller.mu.Unlock()
 	return controller.store.Append(message, usage)
+}
+func (controller *Controller) AppendTurnSummary(summary string, timestamp int64) error {
+	controller.mu.Lock()
+	defer controller.mu.Unlock()
+	return controller.store.AppendTurnSummary(summary, timestamp)
 }
 func (controller *Controller) AppendCompaction(result agent.CompactionResult) error {
 	controller.mu.Lock()
@@ -127,29 +133,50 @@ func New(cwd, model, thinking string) (*Store, error) { return newAt(cwd, cwd, m
 func NewAt(sessionRoot, workspace, model, thinking string) (*Store, error) {
 	return newAt(sessionRoot, workspace, model, thinking)
 }
+
+// NewAtID persists a previously reserved session ID. It is used to promote a
+// server's in-memory draft session only when the first prompt is submitted.
+func NewAtID(sessionRoot, workspace, model, thinking, id string, yolo bool) (*Store, error) {
+	if strings.TrimSpace(id) == "" || strings.ContainsAny(id, `/\`) {
+		return nil, fmt.Errorf("session id must be a UUIDv7")
+	}
+	return newAtID(sessionRoot, workspace, model, thinking, id, yolo)
+}
 func (s *Store) ID() string   { return strings.TrimSuffix(filepath.Base(s.path), ".jsonl") }
 func (s *Store) Path() string { return s.path }
 func newAt(sessionRoot, workspace, model, thinking string) (*Store, error) {
-	dir := filepath.Join(sessionRoot, ".pi-go", "sessions")
-	if err := os.MkdirAll(dir, 0755); err != nil {
-		return nil, err
-	}
 	id, err := NewID()
 	if err != nil {
 		return nil, err
 	}
+	return newAtID(sessionRoot, workspace, model, thinking, id, false)
+}
+func newAtID(sessionRoot, workspace, model, thinking, id string, yolo bool) (*Store, error) {
+	dir := filepath.Join(sessionRoot, ".pi-go", "sessions")
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return nil, err
+	}
 	p := filepath.Join(dir, id+".jsonl")
-	s, err := open(p, Header{Type: "session", Version: 1, CWD: workspace, Model: model, Thinking: thinking, CreatedAt: time.Now().UTC()})
+	if _, err := os.Stat(p); err == nil {
+		return nil, fmt.Errorf("session already exists: %s", id)
+	} else if !os.IsNotExist(err) {
+		return nil, err
+	}
+	s, err := open(p, Header{Type: "session", Version: 1, CWD: workspace, Model: model, Thinking: thinking, YOLO: yolo, CreatedAt: time.Now().UTC()})
 	if err != nil {
 		return nil, err
 	}
 	latest := filepath.Join(sessionRoot, ".pi-go", "latest")
 	temporaryLatest := latest + "." + id + ".tmp"
 	if err = os.WriteFile(temporaryLatest, []byte(p+"\n"), 0600); err != nil {
+		_ = s.Close()
+		_ = os.Remove(p)
 		return nil, err
 	}
 	if err = os.Rename(temporaryLatest, latest); err != nil {
 		_ = os.Remove(temporaryLatest)
+		_ = s.Close()
+		_ = os.Remove(p)
 		return nil, err
 	}
 	return s, nil
@@ -184,9 +211,16 @@ func Resolve(cwd, id string) (string, error) {
 	return p, e
 }
 
-// List returns project sessions newest first. UUIDv7 names are deliberately
-// used as the ordering key rather than file modification time.
+// List returns all project sessions newest first. Callers that render a
+// bounded page should use ListPage so only the selected UUIDv7 files are read.
 func List(cwd string) ([]Entry, error) {
+	return ListPage(cwd, 0, 0)
+}
+
+// ListPage sorts UUIDv7 filenames before opening any session content, then
+// reads metadata only for the requested files. A non-positive limit means all
+// remaining sessions and is retained for terminal/full-list callers.
+func ListPage(cwd string, offset, limit int) ([]Entry, error) {
 	dir := filepath.Join(cwd, ".pi-go", "sessions")
 	files, err := os.ReadDir(dir)
 	if err != nil {
@@ -195,15 +229,32 @@ func List(cwd string) ([]Entry, error) {
 		}
 		return nil, err
 	}
-	entries := make([]Entry, 0, len(files))
+	names := make([]string, 0, len(files))
 	for _, file := range files {
 		if file.IsDir() || filepath.Ext(file.Name()) != ".jsonl" {
 			continue
 		}
-		id := strings.TrimSuffix(file.Name(), ".jsonl")
-		path := filepath.Join(dir, file.Name())
+		names = append(names, file.Name())
+	}
+	// UUIDv7 textual order is chronological, so descending filenames are newest
+	// first without opening or decoding every session file.
+	sort.Sort(sort.Reverse(sort.StringSlice(names)))
+	if offset < 0 {
+		offset = 0
+	}
+	if offset > len(names) {
+		offset = len(names)
+	}
+	end := len(names)
+	if limit > 0 && offset+limit < end {
+		end = offset + limit
+	}
+	entries := make([]Entry, 0, end-offset)
+	for _, name := range names[offset:end] {
+		id := strings.TrimSuffix(name, ".jsonl")
+		path := filepath.Join(dir, name)
 		entry := Entry{ID: id, Path: path}
-		if info, statErr := file.Info(); statErr == nil {
+		if info, statErr := os.Stat(path); statErr == nil {
 			entry.LastMessageTime = info.ModTime()
 		}
 		if readErr := readEntry(path, &entry); readErr != nil {
@@ -211,8 +262,27 @@ func List(cwd string) ([]Entry, error) {
 		}
 		entries = append(entries, entry)
 	}
-	sort.Slice(entries, func(i, j int) bool { return entries[i].ID > entries[j].ID })
 	return entries, nil
+}
+
+// Count returns the number of persisted session JSONL files without opening
+// their contents.
+func Count(cwd string) (int, error) {
+	dir := filepath.Join(cwd, ".pi-go", "sessions")
+	files, err := os.ReadDir(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return 0, nil
+		}
+		return 0, err
+	}
+	count := 0
+	for _, file := range files {
+		if !file.IsDir() && filepath.Ext(file.Name()) == ".jsonl" {
+			count++
+		}
+	}
+	return count, nil
 }
 
 func readEntry(path string, entry *Entry) error {
@@ -243,37 +313,28 @@ func readEntry(path string, entry *Entry) error {
 			}
 		case "session_name":
 			entry.Name = row.Name
-		case "compaction":
+		case "turn_summary":
 			if row.Timestamp > 0 {
 				entry.LastMessageTime = time.UnixMilli(row.Timestamp)
 			}
 			if strings.TrimSpace(row.Summary) != "" {
-				entry.Preview = "[compacted] " + strings.TrimSpace(row.Summary)
+				entry.Summary = strings.TrimSpace(row.Summary)
+			}
+		case "compaction":
+			if entry.Summary == "" && row.Timestamp > 0 {
+				entry.LastMessageTime = time.UnixMilli(row.Timestamp)
 			}
 		case "message":
-			if row.Message.Timestamp > 0 {
+			// Once a classifier summary exists, its timestamp represents the
+			// completed turn and must not be replaced by older raw messages.
+			if entry.Summary == "" && row.Message.Timestamp > 0 {
 				entry.LastMessageTime = time.UnixMilli(row.Message.Timestamp)
-			}
-			if text := messagePreview(row.Message); text != "" {
-				entry.Preview = text
 			}
 		}
 	}
 	return scanner.Err()
 }
 
-func messagePreview(message agent.Message) string {
-	var parts []string
-	for _, block := range message.Content {
-		if block.Type == "text" && strings.TrimSpace(block.Text) != "" {
-			parts = append(parts, strings.TrimSpace(block.Text))
-		}
-		if block.Type == "image" {
-			parts = append(parts, "[image attachment]")
-		}
-	}
-	return strings.Join(parts, " ")
-}
 func Resume(path string) (*Store, Header, []agent.Message, agent.Usage, error) {
 	f, e := os.Open(path)
 	if e != nil {
@@ -439,6 +500,21 @@ func (s *Store) SetCWD(cwd string) error {
 		CWD  string `json:"cwd"`
 	}{"session_settings", cwd})
 }
+func (s *Store) AppendTurnSummary(summary string, timestamp int64) error {
+	summary = strings.TrimSpace(summary)
+	if summary == "" {
+		return fmt.Errorf("turn summary must not be empty")
+	}
+	if timestamp <= 0 {
+		timestamp = time.Now().UnixMilli()
+	}
+	return s.write(struct {
+		Type      string `json:"type"`
+		Summary   string `json:"summary"`
+		Timestamp int64  `json:"timestamp"`
+	}{"turn_summary", summary, timestamp})
+}
+
 func (s *Store) AppendCompaction(result agent.CompactionResult) error {
 	return s.write(struct {
 		Type string `json:"type"`

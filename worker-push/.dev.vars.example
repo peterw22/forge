@@ -1,0 +1,5 @@
+# Copy to .dev.vars and replace every value. Never commit .dev.vars.
+APNS_PRIVATE_KEY_P8="-----BEGIN PRIVATE KEY-----\nREPLACE_ME\n-----END PRIVATE KEY-----"
+APNS_KEY_ID="REPLACE_ME"
+APNS_TEAM_ID="REPLACE_ME"
+PUSH_TOKEN_ENCRYPTION_KEY="REPLACE_WITH_BASE64URL_32_BYTES"

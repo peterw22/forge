@@ -1,0 +1,23 @@
+app-id: com.tingouw.forge
+runtime: org.freedesktop.Platform
+runtime-version: '24.08'
+sdk: org.freedesktop.Sdk
+command: forge
+finish-args:
+  # Remote frontend only: no host filesystem, devices, session/system bus,
+  # notifications, process spawning, or local-agent socket access.
+  - --share=network
+  - --socket=wayland
+  - --socket=fallback-x11
+  - --share=ipc
+  - --device=dri
+  # Clipboard is provided by the compositor through Wayland/X11.
+modules:
+  - name: forge
+    buildsystem: simple
+    build-commands:
+      - install -d /app
+      - cp -a payload/. /app/
+    sources:
+      - type: dir
+        path: payload

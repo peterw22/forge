@@ -330,7 +330,7 @@ func trackedFiles(messages []Message) string {
 				switch block.Name {
 				case "read":
 					read[path] = true
-				case "write", "edit":
+				case "write", "edit", "replace":
 					modified[path] = true
 				}
 			}

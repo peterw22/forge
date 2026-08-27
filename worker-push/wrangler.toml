@@ -1,0 +1,21 @@
+name = "forge-worker-push"
+main = "src/index.ts"
+compatibility_date = "2026-03-01"
+workers_dev = true
+
+[vars]
+APNS_TOPIC = "com.tingouw.forge"
+REGISTRATION_TTL_SECONDS = "300"
+PAIRING_TTL_SECONDS = "300"
+REQUEST_CLOCK_SKEW_SECONDS = "300"
+EVENT_RATE_LIMIT_PER_MINUTE = "30"
+FCM_PROJECT_ID = "forge-2aaf5"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "forge-push"
+# Replace after running: npx wrangler d1 create forge-push
+database_id = "e422246f-c90a-4456-a365-6c82fa9e5c7f"
+
+[triggers]
+crons = ["17 3 * * *"]
