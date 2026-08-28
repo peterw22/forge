@@ -27,12 +27,6 @@ Future<void> showLinuxPortalNotification({
     'title': DBusString(title),
     'body': DBusString(body),
     'priority': DBusString(urgent ? 'high' : 'normal'),
-    'icon': DBusStruct([
-      DBusString('themed'),
-      DBusVariant(
-        DBusArray.string(['com.tingouw.forge', 'applications-development']),
-      ),
-    ]),
   });
   await _notificationPortal().callMethod(
     'org.freedesktop.portal.Notification',

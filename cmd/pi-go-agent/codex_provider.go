@@ -73,6 +73,7 @@ type codexRequestBody struct {
 	Text               any      `json:"text"`
 	Include            []string `json:"include,omitempty"`
 	PromptCacheKey     string   `json:"prompt_cache_key,omitempty"`
+	ServiceTier        string   `json:"service_tier,omitempty"`
 	PreviousResponseID string   `json:"previous_response_id,omitempty"`
 }
 
@@ -172,7 +173,16 @@ func (provider *codexProvider) Stream(ctx context.Context, request agent.Request
 	return events, errs
 }
 
+func resolveCodexFastVariant(model string) (string, string) {
+	const suffix = "-fast"
+	if strings.HasSuffix(model, suffix) && len(model) > len(suffix) {
+		return strings.TrimSuffix(model, suffix), "priority"
+	}
+	return model, ""
+}
+
 func (provider *codexProvider) stream(ctx context.Context, request agent.Request, events chan<- agent.ProviderEvent) error {
+	request.Model, request.ServiceTier = resolveCodexFastVariant(request.Model)
 	fullBody, err := buildCodexRequest(request)
 	if err != nil {
 		return err
@@ -482,7 +492,7 @@ func buildCodexRequest(request agent.Request) (codexRequestBody, error) {
 	body := codexRequestBody{
 		Model: request.Model, Store: false, Stream: true, Instructions: request.SystemPrompt,
 		Input: input, Text: map[string]string{"verbosity": "low"}, Include: []string{"reasoning.encrypted_content"},
-		PromptCacheKey: request.SessionID,
+		PromptCacheKey: request.SessionID, ServiceTier: request.ServiceTier,
 	}
 	if len(tools) > 0 {
 		body.Tools = tools

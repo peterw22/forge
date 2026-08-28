@@ -16,6 +16,7 @@ import 'package:url_launcher/url_launcher.dart';
 
 import 'clipboard_images.dart';
 import 'feedback_notifications.dart';
+import 'forge_fonts.dart';
 import 'push_identity.dart';
 import 'push_relay.dart';
 import 'session_crypto.dart';
@@ -24,32 +25,52 @@ import 'transport.dart';
 
 void main() => runApp(const PiGoApp());
 
-class PiGoApp extends StatelessWidget {
+class PiGoApp extends StatefulWidget {
   const PiGoApp({super.key});
 
   @override
-  Widget build(BuildContext context) {
-    return MaterialApp(
-      debugShowCheckedModeBanner: false,
-      title: 'Pi Go',
-      theme: ThemeData(
-        colorScheme: ColorScheme.fromSeed(
-          seedColor: const Color(0xff25765f),
-          brightness: Brightness.light,
-        ),
-        useMaterial3: true,
+  State<PiGoApp> createState() => _PiGoAppState();
+}
+
+class _PiGoAppState extends State<PiGoApp> {
+  final fonts = ForgeFontController();
+
+  ThemeData _theme(Brightness brightness) {
+    final seed = brightness == Brightness.light
+        ? const Color(0xff25765f)
+        : const Color(0xff62d6a7);
+    final base = ThemeData(
+      colorScheme: ColorScheme.fromSeed(
+        seedColor: seed,
+        brightness: brightness,
       ),
-      darkTheme: ThemeData(
-        colorScheme: ColorScheme.fromSeed(
-          seedColor: const Color(0xff62d6a7),
-          brightness: Brightness.dark,
-        ),
-        useMaterial3: true,
-      ),
-      themeMode: ThemeMode.system,
-      home: const AgentPage(),
+      useMaterial3: true,
     );
+    return base.copyWith(textTheme: fonts.apply(base.textTheme));
   }
+
+  @override
+  void dispose() {
+    fonts.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => ListenableBuilder(
+    listenable: fonts,
+    builder: (context, _) => MaterialApp(
+      debugShowCheckedModeBanner: false,
+      title: 'Forge',
+      theme: _theme(Brightness.light),
+      darkTheme: _theme(Brightness.dark),
+      themeMode: ThemeMode.system,
+      builder: (context, child) {
+        unawaited(fonts.ensureLocale(Localizations.localeOf(context)));
+        return child ?? const SizedBox.shrink();
+      },
+      home: const AgentPage(),
+    ),
+  );
 }
 
 enum ConnectionKind { local, unix, tcp, websocket }

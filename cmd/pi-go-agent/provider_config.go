@@ -431,13 +431,21 @@ func (auth *codexAuthManager) FetchAPIModels(ctx context.Context, name string) (
 }
 
 func configuredModels(auth *codexAuthManager) ([]modelInfo, error) {
-	models := []modelInfo{
-		{ID: "gpt-5.3-codex-spark", Provider: codexProviderID, Label: "OpenAI Codex · gpt-5.3-codex-spark"},
-		{ID: "gpt-5.5", Provider: codexProviderID, Label: "OpenAI Codex · gpt-5.5"},
-		{ID: "gpt-5.6-luna", Provider: codexProviderID, Label: "OpenAI Codex · gpt-5.6-luna"},
-		{ID: "gpt-5.6-sol", Provider: codexProviderID, Label: "OpenAI Codex · gpt-5.6-sol"},
-		{ID: "gpt-5.6-terra", Provider: codexProviderID, Label: "OpenAI Codex · gpt-5.6-terra"},
+	codexModels := []string{
+		"gpt-5.3-codex-spark",
+		"gpt-5.5",
+		"gpt-5.6-luna",
+		"gpt-5.6-sol",
+		"gpt-5.6-terra",
 	}
+	models := make([]modelInfo, 0, len(codexModels)*2)
+	for _, id := range codexModels {
+		models = append(models,
+			modelInfo{ID: id, Provider: codexProviderID, Label: "OpenAI Codex · " + id},
+			modelInfo{ID: id + "-fast", Provider: codexProviderID, Label: "OpenAI Codex · " + id + " · Fast"},
+		)
+	}
+
 	configs, err := auth.APIConfigs()
 	if err != nil {
 		return nil, err

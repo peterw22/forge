@@ -29,21 +29,29 @@ Future<void> showSessionNotification({
   required bool suppressWhenForeground,
 }) async {
   if (linuxPortalNotificationsSupported) {
-    if (suppressWhenForeground) return;
+    // Linux notifications are intentionally available whenever the Flatpak is
+    // running. Unlike the native mobile bridges, this Dart layer has no
+    // reliable compositor-level window-focus signal, so treating the selected
+    // session as foreground would suppress every notification even while the
+    // window is minimized or covered.
     final id = _linuxNotificationID(connection, session);
-    if (!needsFeedback) {
-      await removeLinuxPortalNotification(id);
+    try {
+      if (!needsFeedback) {
+        await removeLinuxPortalNotification(id);
+      }
+      await showLinuxPortalNotification(
+        id: id,
+        title: needsFeedback
+            ? 'Forge needs your feedback'
+            : 'Forge session completed',
+        body: needsFeedback
+            ? 'A connected agent is waiting for approval or input.'
+            : 'A connected agent completed its turn.',
+        urgent: needsFeedback,
+      );
+    } catch (error) {
+      debugPrint('Forge Linux notification portal failed: $error');
     }
-    await showLinuxPortalNotification(
-      id: id,
-      title: needsFeedback
-          ? 'Forge needs your feedback'
-          : 'Forge session completed',
-      body: needsFeedback
-          ? 'A connected agent is waiting for approval or input.'
-          : 'A connected agent completed its turn.',
-      urgent: needsFeedback,
-    );
     return;
   }
   if (kIsWeb) return;

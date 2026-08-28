@@ -1,11 +1,14 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -18,6 +21,48 @@ import (
 func testCodexToken(accountID string) string {
 	payload := base64.RawURLEncoding.EncodeToString([]byte(`{"https://api.openai.com/auth":{"chatgpt_account_id":"` + accountID + `"}}`))
 	return "header." + payload + ".signature"
+}
+
+func TestCodexFastVariantUsesPriorityServiceTier(t *testing.T) {
+	model, tier := resolveCodexFastVariant("gpt-5.6-terra-fast")
+	if model != "gpt-5.6-terra" || tier != "priority" {
+		t.Fatalf("model=%q tier=%q", model, tier)
+	}
+	body, err := buildCodexRequest(agent.Request{Model: model, ServiceTier: tier})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if body.Model != "gpt-5.6-terra" || body.ServiceTier != "priority" {
+		t.Fatalf("body=%#v", body)
+	}
+	encoded, err := json.Marshal(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(encoded, []byte(`"service_tier":"priority"`)) || bytes.Contains(encoded, []byte(`gpt-5.6-terra-fast`)) {
+		t.Fatalf("encoded=%s", encoded)
+	}
+	model, tier = resolveCodexFastVariant("gpt-5.6-terra")
+	if model != "gpt-5.6-terra" || tier != "" {
+		t.Fatalf("normal model=%q tier=%q", model, tier)
+	}
+}
+
+func TestConfiguredModelsIncludeCodexFastVariants(t *testing.T) {
+	auth := newCodexAuthManagerAt(filepath.Join(t.TempDir(), "auth.json"), defaultCodexAuthEndpoints, http.DefaultClient)
+	models, err := configuredModels(auth)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, model := range models {
+		if model.ID == "gpt-5.6-terra-fast" && model.Provider == codexProviderID && strings.Contains(model.Label, "Fast") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("fast variant missing: %#v", models)
+	}
 }
 
 func TestCachedRequestBodySendsOnlyDelta(t *testing.T) {

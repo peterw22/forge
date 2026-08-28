@@ -84,6 +84,7 @@ type Request struct {
 	Messages     []Message
 	Tools        []Tool
 	SessionID    string
+	ServiceTier  string
 }
 
 type ProviderEventType string
