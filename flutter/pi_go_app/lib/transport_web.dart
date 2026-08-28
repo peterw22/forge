@@ -8,7 +8,7 @@ bool get webSocketOnlyClient => true;
 bool get localAgentSupported => false;
 String get defaultLocalAddress => '';
 String get defaultUnixAddress => '';
-String get defaultWebSocketAddress => 'ws://192.168.50.50:7346/ws';
+String get defaultWebSocketAddress => 'wss://forge-agent.example/ws';
 
 Future<AgentTransport> connectLocalTransport() => Future.error(
   UnsupportedError('The bundled local agent requires the native macOS app'),
@@ -19,7 +19,11 @@ Future<AgentTransport> connectTcpTransport(String value) =>
     Future.error(UnsupportedError('Raw TCP requires the native macOS app'));
 
 Future<AgentTransport> connectWebSocketTransport(String value) async {
-  final channel = WebSocketChannel.connect(Uri.parse(value));
+  final uri = Uri.parse(value.trim());
+  if (uri.scheme != 'wss' || uri.host.isEmpty) {
+    throw const FormatException('Forge Web requires a wss:// URL');
+  }
+  final channel = WebSocketChannel.connect(uri);
   await channel.ready;
   return _WebSocketTransport(channel);
 }

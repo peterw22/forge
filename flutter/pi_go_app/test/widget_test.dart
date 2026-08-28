@@ -238,6 +238,16 @@ void main() {
     debugDefaultTargetPlatformOverride = null;
   });
 
+  test('reconnect backoff doubles and caps at thirty seconds', () {
+    expect(reconnectBackoffDelay(0), const Duration(seconds: 1));
+    expect(reconnectBackoffDelay(1), const Duration(seconds: 2));
+    expect(reconnectBackoffDelay(2), const Duration(seconds: 4));
+    expect(reconnectBackoffDelay(3), const Duration(seconds: 8));
+    expect(reconnectBackoffDelay(4), const Duration(seconds: 16));
+    expect(reconnectBackoffDelay(5), const Duration(seconds: 30));
+    expect(reconnectBackoffDelay(50), const Duration(seconds: 30));
+  });
+
   testWidgets('reconnect catch-up does not reject pending safety approval', (
     tester,
   ) async {

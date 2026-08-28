@@ -1,11 +1,11 @@
 {
-    "name": "pi_go_app",
-    "short_name": "pi_go_app",
+    "name": "Forge",
+    "short_name": "Forge",
     "start_url": ".",
     "display": "standalone",
-    "background_color": "#0175C2",
-    "theme_color": "#0175C2",
-    "description": "A new Flutter project.",
+    "background_color": "#176f59",
+    "theme_color": "#176f59",
+    "description": "Forge encrypted remote agent frontend",
     "orientation": "portrait-primary",
     "prefer_related_applications": false,
     "icons": [

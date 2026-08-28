@@ -76,10 +76,10 @@ Future<void> showSessionNotification({
 
 String _linuxNotificationID(String connection, String session) {
   // D-Bus IDs are not user-visible, but avoid raw endpoint/session text anyway.
-  var hash = 0xcbf29ce484222325;
+  var hash = 0x811c9dc5;
   for (final unit in '$connection\n$session'.codeUnits) {
     hash ^= unit;
-    hash = (hash * 0x100000001b3) & 0x7fffffffffffffff;
+    hash = (hash * 0x01000193) & 0x7fffffff;
   }
   return 'forge-$hash';
 }

@@ -336,7 +336,9 @@ class AgentConnection extends ChangeNotifier {
   bool get connected => _transport != null && _protocolReady;
 
   Future<void> connect(ConnectionKind kind, String address) async {
-    await disconnect();
+    // Reset transport state without reporting an externally visible disconnect;
+    // the slot-level reconnect controller owns retry scheduling.
+    await disconnect(notifyDisconnected: false);
     endpointKind = kind;
     endpoint = address.trim();
     status = 'connecting';
@@ -351,9 +353,10 @@ class AgentConnection extends ChangeNotifier {
       await _attach(transport);
       await _connectCompleter!.future.timeout(const Duration(seconds: 35));
     } catch (error) {
-      await disconnect();
+      await disconnect(notifyDisconnected: false);
       status = 'connection failed: $error';
       notifyListeners();
+      onDisconnected?.call(this);
     }
   }
 
@@ -425,7 +428,7 @@ class AgentConnection extends ChangeNotifier {
     notifyListeners();
   }
 
-  Future<void> disconnect() async {
+  Future<void> disconnect({bool notifyDisconnected = true}) async {
     final subscription = _lines;
     _lines = null;
     await subscription?.cancel();
@@ -448,7 +451,7 @@ class AgentConnection extends ChangeNotifier {
     );
     _pushAuthorizationRevokeRequest = null;
     status = 'disconnected';
-    onDisconnected?.call(this);
+    if (notifyDisconnected) onDisconnected?.call(this);
     notifyListeners();
   }
 
@@ -1470,6 +1473,27 @@ class ConnectionSlot {
   String pushAgentId;
   String trustedServerFingerprint;
   String trustedServerAgentId;
+  Timer? reconnectTimer;
+  int reconnectAttempt = 0;
+  bool reconnectInProgress = false;
+
+  void cancelReconnect({bool resetAttempt = true}) {
+    reconnectTimer?.cancel();
+    reconnectTimer = null;
+    if (resetAttempt) reconnectAttempt = 0;
+  }
+}
+
+Duration reconnectBackoffDelay(int attempt) {
+  final seconds = switch (attempt.clamp(0, 5)) {
+    0 => 1,
+    1 => 2,
+    2 => 4,
+    3 => 8,
+    4 => 16,
+    _ => 30,
+  };
+  return Duration(seconds: seconds);
 }
 
 class AgentPage extends StatefulWidget {
@@ -1593,7 +1617,11 @@ class _AgentPageState extends State<AgentPage> with WidgetsBindingObserver {
   void _configureConnection(AgentConnection connection) {
     connection.onSessionNotification = (session, needsFeedback) =>
         _sessionNotification(connection, session, needsFeedback);
-    connection.onConnected = _handlePushConnected;
+    connection.onConnected = (connection) {
+      final slot = _slotForConnection(connection);
+      slot?.cancelReconnect();
+      _handlePushConnected(connection);
+    };
     connection.onAuthenticationMessage = _handleAuthenticationMessage;
     connection.onPushResponse = _handlePushResponse;
     connection.onTranscriptLoaded = (_) => _resetTranscriptScroll();
@@ -1604,8 +1632,20 @@ class _AgentPageState extends State<AgentPage> with WidgetsBindingObserver {
       _pushSetupStarted.remove(connection);
       _pushAuthorizedConnections.remove(connection);
       _pushAgentPublicKeys.remove(connection);
+      final slot = _slotForConnection(connection);
+      if (slot != null &&
+          slot.reconnectOnLaunch &&
+          slot.kind != ConnectionKind.local) {
+        _scheduleReconnect(slot);
+      }
     };
     connection.addListener(_changed);
+  }
+
+  Future<void> _disconnectWithoutRetry(AgentConnection connection) async {
+    final slot = _slotForConnection(connection);
+    if (slot != null) _cancelReconnect(slot, disable: true);
+    await connection.disconnect();
   }
 
   Future<void> _initializeDeviceIdentity() async {
@@ -1633,7 +1673,7 @@ class _AgentPageState extends State<AgentPage> with WidgetsBindingObserver {
         _authClientNonces.remove(connection);
         _authEphemeralSessions.remove(connection);
         connection.setLocalStatus('Authentication failed');
-        await connection.disconnect();
+        await _disconnectWithoutRetry(connection);
         return;
       }
       var identity = _deviceIdentity;
@@ -1641,7 +1681,7 @@ class _AgentPageState extends State<AgentPage> with WidgetsBindingObserver {
       _deviceIdentity = identity;
       if (identity == null) {
         connection.setLocalStatus('This platform has no device identity');
-        await connection.disconnect();
+        await _disconnectWithoutRetry(connection);
         return;
       }
       if (type == 'auth_required') {
@@ -1740,7 +1780,7 @@ class _AgentPageState extends State<AgentPage> with WidgetsBindingObserver {
       }
       if (slot.trustedServerFingerprint.isEmpty) {
         if (_serverTrustDialogOpen || !mounted) {
-          await connection.disconnect();
+          await _disconnectWithoutRetry(connection);
           return;
         }
         _serverTrustDialogOpen = true;
@@ -1779,7 +1819,7 @@ class _AgentPageState extends State<AgentPage> with WidgetsBindingObserver {
         );
         _serverTrustDialogOpen = false;
         if (trusted != true) {
-          await connection.disconnect();
+          await _disconnectWithoutRetry(connection);
           return;
         }
         slot.trustedServerFingerprint = fingerprint;
@@ -1844,7 +1884,7 @@ class _AgentPageState extends State<AgentPage> with WidgetsBindingObserver {
       _authClientNonces.remove(connection);
       _authEphemeralSessions.remove(connection);
       debugPrint('Forge authentication failed: $error\n$stackTrace');
-      await connection.disconnect();
+      await _disconnectWithoutRetry(connection);
       connection.setLocalStatus('Authentication failed: $error');
     }
   }
@@ -2212,12 +2252,14 @@ class _AgentPageState extends State<AgentPage> with WidgetsBindingObserver {
       }
       if (restored.isEmpty || !mounted) {
         for (final slot in restored) {
+          slot.cancelReconnect();
           slot.connection.removeListener(_changed);
           slot.connection.dispose();
         }
         return;
       }
       for (final slot in connections) {
+        slot.cancelReconnect();
         slot.connection.removeListener(_changed);
         slot.connection.dispose();
       }
@@ -2289,18 +2331,74 @@ class _AgentPageState extends State<AgentPage> with WidgetsBindingObserver {
     });
   }
 
+  ConnectionSlot? _slotForConnection(AgentConnection connection) =>
+      connections.where((slot) => slot.connection == connection).firstOrNull;
+
+  void _cancelReconnect(ConnectionSlot slot, {bool disable = false}) {
+    if (disable) slot.reconnectOnLaunch = false;
+    slot.cancelReconnect();
+  }
+
+  void _scheduleReconnect(ConnectionSlot slot, {bool immediate = false}) {
+    if (!mounted ||
+        !slot.reconnectOnLaunch ||
+        slot.kind == ConnectionKind.local ||
+        slot.connection.connected ||
+        slot.reconnectInProgress ||
+        slot.reconnectTimer != null ||
+        !connections.contains(slot)) {
+      return;
+    }
+    final delay = immediate
+        ? Duration.zero
+        : reconnectBackoffDelay(slot.reconnectAttempt++);
+    if (delay > Duration.zero) {
+      slot.connection.setLocalStatus(
+        'disconnected · reconnecting in ${delay.inSeconds}s',
+      );
+    }
+    slot.reconnectTimer = Timer(delay, () {
+      slot.reconnectTimer = null;
+      unawaited(_attemptReconnect(slot));
+    });
+  }
+
+  Future<void> _attemptReconnect(ConnectionSlot slot) async {
+    if (!mounted ||
+        !connections.contains(slot) ||
+        !slot.reconnectOnLaunch ||
+        slot.kind == ConnectionKind.local ||
+        slot.connection.connected ||
+        slot.reconnectInProgress) {
+      return;
+    }
+    final endpoint = slot.address.trim();
+    if (endpoint.isEmpty) return;
+    slot.reconnectInProgress = true;
+    try {
+      await slot.connection.connect(slot.kind, endpoint);
+    } finally {
+      slot.reconnectInProgress = false;
+    }
+    if (slot.connection.connected) {
+      slot.cancelReconnect();
+    } else {
+      _scheduleReconnect(slot);
+    }
+  }
+
   Future<void> _reconnectDisconnectedSlots() async {
     for (final slot in List<ConnectionSlot>.from(connections)) {
       if (!mounted ||
           !slot.reconnectOnLaunch ||
           slot.connection.connected ||
-          slot.connection.status == 'connecting' ||
           slot.kind == ConnectionKind.local) {
         continue;
       }
-      final endpoint = slot.address.trim();
-      if (endpoint.isEmpty) continue;
-      await slot.connection.connect(slot.kind, endpoint);
+      // Resume should not wait for an old background timer. Try immediately,
+      // then continue the same capped exponential sequence if it still fails.
+      slot.cancelReconnect(resetAttempt: false);
+      _scheduleReconnect(slot, immediate: true);
     }
   }
 
@@ -2793,6 +2891,7 @@ class _AgentPageState extends State<AgentPage> with WidgetsBindingObserver {
     if (index < 0 || index >= connections.length) return;
     final slot = connections[index];
     if (!await _confirmLocalStop(slot)) return;
+    _cancelReconnect(slot, disable: true);
     await slot.connection.disconnect();
     if (!mounted) return;
     if (connections.length == 1) {
@@ -2803,6 +2902,7 @@ class _AgentPageState extends State<AgentPage> with WidgetsBindingObserver {
     }
     _authClientNonces.remove(slot.connection);
     _authEphemeralSessions.remove(slot.connection);
+    slot.cancelReconnect();
     slot.connection.removeListener(_changed);
     slot.connection.dispose();
     setState(() {
@@ -2850,7 +2950,7 @@ class _AgentPageState extends State<AgentPage> with WidgetsBindingObserver {
   Future<void> _disconnectActive() async {
     final slot = connections[activeConnectionIndex];
     if (await _confirmLocalStop(slot)) {
-      slot.reconnectOnLaunch = false;
+      _cancelReconnect(slot, disable: true);
       _schedulePersistConnections();
       await slot.connection.disconnect();
     }
@@ -2885,8 +2985,10 @@ class _AgentPageState extends State<AgentPage> with WidgetsBindingObserver {
       if (proceed != true) return;
     }
     slot.reconnectOnLaunch = true;
+    slot.cancelReconnect();
     _schedulePersistConnections();
-    await agent.connect(connectionKind, slot.address);
+    await slot.connection.connect(connectionKind, slot.address);
+    if (!slot.connection.connected) _scheduleReconnect(slot);
     _schedulePersistConnections();
   }
 
@@ -2918,11 +3020,11 @@ class _AgentPageState extends State<AgentPage> with WidgetsBindingObserver {
           ? slot.connection.endpoint
           : slot.address;
       if (slotEndpoint != endpoint) continue;
+      _cancelReconnect(slot, disable: true);
       await slot.connection.disconnect();
       slot
         ..trustedServerFingerprint = ''
-        ..trustedServerAgentId = ''
-        ..reconnectOnLaunch = false;
+        ..trustedServerAgentId = '';
     }
     trustedServers.remove(endpoint);
     await _persistConnectionsNow();
@@ -3304,6 +3406,7 @@ class _AgentPageState extends State<AgentPage> with WidgetsBindingObserver {
       ClipboardEvents.instance?.unregisterPasteEventListener(_handleWebPaste);
     }
     for (final slot in connections) {
+      slot.cancelReconnect();
       slot.connection.removeListener(_changed);
       slot.connection.dispose();
     }
