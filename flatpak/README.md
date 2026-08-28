@@ -17,7 +17,7 @@ The Flatpak build is a **remote frontend only**:
 
 ## Build requirements
 
-Build on an x86-64 Linux host (native, VM, or CI) with:
+Build on an x86-64 or arm64 Linux host (native, VM, or CI) with:
 
 - Flutter 3.44 or newer with Linux desktop enabled
 - GTK 3 development packages, Clang, CMake, Ninja, pkg-config
@@ -40,16 +40,22 @@ Then:
 ./flatpak/package.sh
 ```
 
-Output:
+Output depends on the native host architecture:
 
 ```text
 dist/linux/Forge-x86_64.flatpak
+dist/linux/Forge-aarch64.flatpak
 ```
 
 Install locally:
 
 ```bash
+# x86-64
 flatpak install --user --reinstall dist/linux/Forge-x86_64.flatpak
+
+# arm64 / aarch64
+flatpak install --user --reinstall dist/linux/Forge-aarch64.flatpak
+
 flatpak run com.tingouw.forge
 ```
 
@@ -60,6 +66,37 @@ flatpak info --show-permissions com.tingouw.forge
 ```
 
 Expected permissions are network, Wayland/fallback X11, IPC, and DRI only.
+
+## Architecture selection
+
+`package.sh` detects `uname -m` automatically:
+
+- `x86_64` builds Flutter target `linux-x64` and Flatpak arch `x86_64`.
+- `aarch64`/`arm64` builds Flutter target `linux-arm64` and Flatpak arch `aarch64`.
+
+To select explicitly:
+
+```bash
+FORGE_FLATPAK_ARCH=x86_64 ./flatpak/package.sh
+FORGE_FLATPAK_ARCH=aarch64 ./flatpak/package.sh
+```
+
+A native host matching the target architecture is recommended. Flutter supports
+cross-building when a complete target sysroot is supplied:
+
+```bash
+FORGE_FLATPAK_ARCH=aarch64 \
+FORGE_FLATPAK_SYSROOT=/path/to/aarch64/sysroot \
+./flatpak/package.sh
+```
+
+The matching Flatpak Platform and SDK architecture must also be installed. On
+an arm64 host, for example:
+
+```bash
+flatpak install --user --arch=aarch64 flathub \
+  org.freedesktop.Platform//24.08 org.freedesktop.Sdk//24.08
+```
 
 ## macOS limitation
 
