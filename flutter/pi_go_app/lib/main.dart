@@ -14,6 +14,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:super_clipboard/super_clipboard.dart';
 import 'package:url_launcher/url_launcher.dart';
 
+import 'browser_live.dart';
 import 'clipboard_images.dart';
 import 'feedback_notifications.dart';
 import 'forge_fonts.dart';
@@ -264,6 +265,7 @@ List<TextSpan> _syntaxSpans(
 }
 
 class AgentConnection extends ChangeNotifier {
+  late final BrowserLiveController browserLive = BrowserLiveController(send);
   AgentTransport? _transport;
   StreamSubscription<String>? _lines;
   final List<TranscriptItem> messages = [];
@@ -433,6 +435,7 @@ class AgentConnection extends ChangeNotifier {
   }
 
   void _closed([Object? error]) {
+    browserLive.reset();
     final transport = _transport;
     _transport = null;
     _connectGeneration++;
@@ -466,6 +469,7 @@ class AgentConnection extends ChangeNotifier {
     bool supersedeConnect = true,
   }) async {
     if (supersedeConnect) _connectGeneration++;
+    browserLive.reset();
     final subscription = _lines;
     _lines = null;
     await subscription?.cancel();
@@ -823,6 +827,18 @@ class AgentConnection extends ChangeNotifier {
         );
       }
       final responseType = '${response['type'] ?? ''}';
+      if (responseType == 'browser_frame') {
+        browserLive.receive(response);
+        return; // Live frames never enter the transcript or trigger its rebuild.
+      }
+      if (responseType == 'browser_state' ||
+          '${response['command'] ?? ''}'.startsWith('browser_')) {
+        if (response['session'] == null ||
+            response['session'] == currentSession) {
+          browserLive.receive(response);
+        }
+        return;
+      }
       if (responseType == 'key_confirmation') {
         final secure = _secureSession;
         if (secure == null) {
@@ -1042,8 +1058,12 @@ class AgentConnection extends ChangeNotifier {
         _sessionRequest = null;
       }
       if (response['session'] case final String session
-          when session.isNotEmpty) {
+          when session.isNotEmpty && responseType != 'session_status') {
         currentSession = session;
+        browserLive.setSession(session);
+      }
+      if (response['browser'] is Map<String, dynamic>) {
+        browserLive.receive(response);
       }
       if (response['model'] case final String model when model.isNotEmpty) {
         currentModel = model;
@@ -1467,6 +1487,8 @@ class AgentConnection extends ChangeNotifier {
 
   @override
   void dispose() {
+    browserLive.stop();
+    browserLive.dispose();
     _lines?.cancel();
     _transport?.close();
     super.dispose();
@@ -4433,39 +4455,58 @@ class _AgentPageState extends State<AgentPage> with WidgetsBindingObserver {
             _connectionBar(),
             const Divider(height: 1),
             Expanded(
-              child: agent.messages.isEmpty
-                  ? const Center(
+              child: Stack(
+                children: [
+                  if (agent.messages.isEmpty)
+                    const Center(
                       child: Text(
                         'Connect to pi-go-agent and start a conversation.',
                       ),
-                    )
-                  : Stack(
-                      children: [
-                        NotificationListener<ScrollNotification>(
-                          onNotification: _handleTranscriptScroll,
-                          child: ListView.builder(
-                            controller: scroll,
-                            padding: const EdgeInsets.all(20),
-                            itemCount: agent.messages.length,
-                            itemBuilder: (_, index) =>
-                                _message(agent.messages[index]),
-                          ),
-                        ),
-                        if (_showScrollToBottom)
-                          Positioned(
-                            right: 16,
-                            bottom: 16,
-                            child: FloatingActionButton.small(
-                              heroTag: 'scroll-to-transcript-bottom',
-                              tooltip: 'Scroll to bottom',
-                              onPressed: _scrollToBottom,
-                              child: const Icon(
-                                Icons.keyboard_double_arrow_down,
-                              ),
-                            ),
-                          ),
-                      ],
                     ),
+                  NotificationListener<ScrollNotification>(
+                    onNotification: _handleTranscriptScroll,
+                    child: ListView.builder(
+                      controller: scroll,
+                      padding: const EdgeInsets.all(20),
+                      itemCount: agent.messages.length,
+                      itemBuilder: (_, index) =>
+                          _message(agent.messages[index]),
+                    ),
+                  ),
+                  Positioned(
+                    right: 16,
+                    bottom: _showScrollToBottom ? 72 : 16,
+                    child: ListenableBuilder(
+                      listenable: agent.browserLive,
+                      builder: (context, _) => agent.browserLive.open
+                          ? FloatingActionButton.small(
+                              heroTag: 'browser-live-view',
+                              tooltip: 'Browser live view',
+                              onPressed: () => Navigator.of(context).push(
+                                MaterialPageRoute<void>(
+                                  builder: (_) => BrowserLiveView(
+                                    controller: agent.browserLive,
+                                  ),
+                                ),
+                              ),
+                              child: const Icon(Icons.web),
+                            )
+                          : const SizedBox.shrink(),
+                    ),
+                  ),
+                  if (_showScrollToBottom)
+                    Positioned(
+                      right: 16,
+                      bottom: 16,
+                      child: FloatingActionButton.small(
+                        heroTag: 'scroll-to-transcript-bottom',
+                        tooltip: 'Scroll to bottom',
+                        onPressed: _scrollToBottom,
+                        child: const Icon(Icons.keyboard_double_arrow_down),
+                      ),
+                    ),
+                ],
+              ),
             ),
             const Divider(height: 1),
             _composer(),

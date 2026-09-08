@@ -32,6 +32,8 @@ type outboundResponse struct {
 
 type subscriber struct {
 	responses  chan outboundResponse
+	frames     chan outboundResponse // one replaceable frame, never in the reliable queue
+	frameMu    sync.Mutex
 	done       chan struct{}
 	closeOnce  sync.Once
 	closeIO    func()
@@ -39,7 +41,7 @@ type subscriber struct {
 }
 
 func newSubscriber(closeIO func()) *subscriber {
-	subscriber := &subscriber{responses: make(chan outboundResponse, subscriberQueueSize), done: make(chan struct{}), closeIO: closeIO}
+	subscriber := &subscriber{responses: make(chan outboundResponse, subscriberQueueSize), frames: make(chan outboundResponse, 1), done: make(chan struct{}), closeIO: closeIO}
 	subscriber.generation.Store(1)
 	return subscriber
 }
@@ -120,7 +122,19 @@ type sessionRuntime struct {
 
 func newSessionRuntime(id string, core *agent.Agent, sessions *session.Controller) *sessionRuntime {
 	core.SetSessionID(id)
-	return &sessionRuntime{id: id, core: core, sessions: sessions, subscribers: make(map[*subscriber]struct{}), browser: &browserSession{}}
+	runtime := &sessionRuntime{id: id, core: core, sessions: sessions, subscribers: make(map[*subscriber]struct{}), browser: &browserSession{}}
+	runtime.browser.live.notify = func(_ browserViewState) {
+		runtime.mu.Lock()
+		defer runtime.mu.Unlock()
+		state := runtime.browser.live.state()
+		if runtime.closed {
+			return
+		}
+		for subscriber := range runtime.subscribers {
+			subscriber.enqueue(backendResponse{Type: "browser_state", Session: runtime.id, Browser: &state})
+		}
+	}
+	return runtime
 }
 func newDraftSessionRuntime(id, root string, core *agent.Agent) *sessionRuntime {
 	runtime := newSessionRuntime(id, core, nil)
@@ -199,7 +213,8 @@ func (runtime *sessionRuntime) enqueueSnapshotLocked(subscriber *subscriber, id,
 	page, start, hasMore := transcriptPage(fullState.Messages, len(fullState.Messages), defaultTranscriptMessages)
 	state.Messages = page
 	model, thinking, cwd := runtime.core.Settings()
-	subscriber.enqueue(backendResponse{ID: id, Type: "response", Command: command, Success: true, State: &state, Model: model, Thinking: thinking, CWD: cwd, Session: runtime.id, HistoryBefore: start, HistoryHasMore: hasMore})
+	browserState := runtime.browser.live.state()
+	subscriber.enqueue(backendResponse{ID: id, Type: "response", Command: command, Success: true, Browser: &browserState, State: &state, Model: model, Thinking: thinking, CWD: cwd, Session: runtime.id, HistoryBefore: start, HistoryHasMore: hasMore})
 	if !runtime.active || runtime.inFlight.ending {
 		return
 	}
@@ -914,6 +929,7 @@ func (client *clientConnection) attach(runtime *sessionRuntime) {
 }
 func (client *clientConnection) attachFor(runtime *sessionRuntime, id, command string) {
 	if client.runtime != nil {
+		client.runtime.browser.live.unwatch(client.subscriber)
 		client.runtime.unsubscribe(client.subscriber)
 		client.subscriber.nextGeneration()
 	}
@@ -923,6 +939,7 @@ func (client *clientConnection) attachFor(runtime *sessionRuntime, id, command s
 func (client *clientConnection) close() {
 	client.registry.unsubscribe(client.subscriber)
 	if client.runtime != nil {
+		client.runtime.browser.live.unwatch(client.subscriber)
 		client.runtime.unsubscribe(client.subscriber)
 	}
 	client.subscriber.close()
@@ -943,8 +960,11 @@ func serveClient(registry *runtimeRegistry, input io.Reader, output io.Writer, c
 		defer close(writerDone)
 		encoder := jsonEncoder(output)
 		for {
-			select {
-			case outbound := <-subscriber.responses:
+			outbound, ok := subscriber.nextOutbound()
+			if !ok {
+				return
+			}
+			{
 				if outbound.generation != subscriber.generation.Load() {
 					if outbound.written != nil {
 						outbound.written <- nil
@@ -969,8 +989,6 @@ func serveClient(registry *runtimeRegistry, input io.Reader, output io.Writer, c
 					subscriber.close()
 					return
 				}
-			case <-subscriber.done:
-				return
 			}
 		}
 	}()
@@ -1128,6 +1146,36 @@ func (client *clientConnection) handle(command backendCommand) error {
 			return err
 		}
 		client.reply(backendResponse{ID: command.ID, Type: "response", Command: command.Type, Success: true, DeviceID: client.pushDeviceID, PairingID: command.PairingID, PushAuthorized: true, PushKeyID: key.KeyID, PushKey: key.Key, PushKeySignature: keySignature})
+	case "browser_frame_ack":
+		if command.Session != runtime.id {
+			return errors.New("browser acknowledgement targets a different session")
+		}
+		runtime.browser.live.acknowledge(client.subscriber, command)
+	case "browser_view_start", "browser_view_stop", "browser_control_acquire", "browser_control_release", "browser_input":
+		if command.Session != runtime.id {
+			return errors.New("browser command targets a different session")
+		}
+		var token string
+		var err error
+		switch command.Type {
+		case "browser_view_start":
+			err = runtime.browser.live.watch(client.subscriber, command.BrowserInstance)
+		case "browser_view_stop":
+			runtime.browser.live.unwatch(client.subscriber)
+		case "browser_control_acquire":
+			token, err = runtime.browser.control(client.subscriber, command)
+		case "browser_control_release":
+			runtime.browser.live.release(client.subscriber)
+		case "browser_input":
+			err = runtime.browser.manualInput(client.subscriber, command)
+		}
+		if err != nil {
+			state := runtime.browser.live.state()
+			client.reply(backendResponse{ID: command.ID, Type: "response", Command: command.Type, Session: runtime.id, Browser: &state, Error: err.Error()})
+			return nil
+		}
+		state := runtime.browser.live.state()
+		client.reply(backendResponse{ID: command.ID, Type: "response", Command: command.Type, Success: true, Session: runtime.id, Browser: &state, ControlToken: token})
 	case "get_state":
 		runtime.sendSnapshot(client.subscriber, command.ID, command.Type)
 	case "get_transcript_history":

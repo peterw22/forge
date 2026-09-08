@@ -20,6 +20,7 @@ const browserActionTimeout = 10000.0
 // Each session owns one ephemeral headed Chromium profile and one page.
 // Browser dependencies must be installed explicitly, never during a tool call.
 type browserSession struct {
+	live             browserLive
 	mu               sync.Mutex
 	driver           *pw.Playwright
 	browser          pw.Browser
@@ -147,11 +148,14 @@ func (session *browserSession) start() error {
 		return err
 	}
 	session.page = page
-	page.OnPopup(func(popup pw.Page) { _ = popup.Close() })
-	page.OnDialog(func(dialog pw.Dialog) { _ = dialog.Dismiss() })
+	// Playwright invokes event handlers on its protocol dispatcher. Blocking
+	// API calls here deadlock the response needed to complete that same call.
+	page.OnPopup(func(popup pw.Page) { go func() { _ = popup.Close() }() })
+	page.OnDialog(func(dialog pw.Dialog) { go func() { _ = dialog.Dismiss() }() })
 	page.OnRequest(func(request pw.Request) { session.network.update(request, true) })
 	page.OnRequestFinished(func(request pw.Request) { session.network.update(request, false) })
 	page.OnRequestFailed(func(request pw.Request) { session.network.update(request, false) })
+	session.startLive(page, browserContext)
 	return nil
 }
 
@@ -159,6 +163,9 @@ func (session *browserSession) execute(action string) agent.ToolExecutor {
 	return func(ctx context.Context, args map[string]any, _ func(agent.ToolResult)) (agent.ToolResult, error) {
 		session.mu.Lock()
 		defer session.mu.Unlock()
+		if session.live.manuallyControlled() {
+			return agent.ToolResult{}, errors.New("browser under manual control; wait for the user to release control, then take a fresh screenshot")
+		}
 		if err := ctx.Err(); err != nil {
 			return agent.ToolResult{}, err
 		}
@@ -397,6 +404,7 @@ func (session *browserSession) clearRefs() {
 }
 
 func (session *browserSession) closeLocked() {
+	session.stopLive("")
 	session.cursorPlaced = false
 	session.refs = nil
 	if session.context != nil {

@@ -257,6 +257,16 @@ func main() {
 }
 
 type backendCommand struct {
+	BrowserInstance     string               `json:"browserInstance,omitempty"`
+	ControlToken        string               `json:"controlToken,omitempty"`
+	FrameID             uint64               `json:"frameId,omitempty"`
+	BrowserAction       string               `json:"browserAction,omitempty"`
+	X                   float64              `json:"x,omitempty"`
+	Y                   float64              `json:"y,omitempty"`
+	Text                string               `json:"text,omitempty"`
+	Key                 string               `json:"key,omitempty"`
+	Button              string               `json:"button,omitempty"`
+	Direction           string               `json:"direction,omitempty"`
 	ID                  string               `json:"id,omitempty"`
 	Type                string               `json:"type"`
 	Message             string               `json:"message,omitempty"`
@@ -304,6 +314,9 @@ type backendCommand struct {
 }
 
 type backendResponse struct {
+	Browser            *browserViewState   `json:"browser,omitempty"`
+	BrowserFrame       *browserViewFrame   `json:"browserFrame,omitempty"`
+	ControlToken       string              `json:"controlToken,omitempty"`
 	ID                 string              `json:"id,omitempty"`
 	Type               string              `json:"type"`
 	Command            string              `json:"command,omitempty"`

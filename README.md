@@ -132,6 +132,16 @@ Navigation and clicks wait for 500 ms without active page HTTP requests, capped 
 
 Browser screenshots use the same image content blocks as the `read` tool, so they are sent directly to vision-capable models and shown in the Flutter transcript. OpenAI-compatible chat adapters attach tool images as a following user image message after the complete batch of tool results. Models without vision support cannot interpret them.
 
+## Browser live view and manual control
+
+When a session has an open browser, Flutter shows a browser button on the right side of the transcript. Open it for an on-demand **1280×720 JPEG sequence at up to 2 FPS**, carried over the existing authenticated, AES-GCM-encrypted connection. The 1280×800 browser viewport is scaled and letterboxed, not resized. Pinch to zoom and drag to pan the image; separate arrow buttons scroll the page. The viewer preserves its zoom across frames and keeps only the latest decoded image. Live frames are neither sent to the model nor persisted in session transcripts.
+
+The viewer starts read-only. **Take control** obtains a single-client lease once the current browser action has finished (retry if it is busy). Agent browser tools are blocked while a viewer owns control. Tap to left-click, long-press to right-click; use the text field to send Unicode text into the focused browser field, and the key buttons for Enter, Tab, Backspace, Escape, selection, and arrows. Manual input is acknowledged without being added to chat history. Browser pages can still receive and transmit the typed content, and it can appear in later screenshots. Keyboard input is buffered locally until Send, not forwarded for each IME composition event.
+
+Control and viewing renew every five seconds and expire after fifteen seconds without renewal. Closing/backgrounding the view, disconnecting, switching sessions, or closing the browser releases control. Agent element references and cursor placement are invalidated on takeover and manual input; use a fresh tool screenshot after handoff. Multiple clients can watch, but only one can control. Input includes the browser instance and displayed frame sequence; old-instance, expired-lease, and stale-frame input is rejected. Input coordinates are converted through the zoom/pan and letterbox transforms.
+
+Capture runs independently of the browser action mutex, so agent network-idle waits do not freeze the view. Each viewer has one replaceable pending-frame slot separate from reliable chat/approval responses. Slow clients acknowledge frames after decoding/display; the server allows one in-flight frame per viewer, with a five-second recovery timeout, instead of building a video backlog. Input is checked against frames actually sent to that viewer within the last ten seconds, rather than against the global capture counter. Recoverable input errors do not discard the client's control token. One in-flight encrypted frame can still delay the next reliable response on the same connection. Frames have a 1 MiB JPEG limit and manual input has a bounded execution timeout. Native browser chrome/context menus are not part of page screenshots.
+
 ## Go terminal frontend
 
 `pi-go-tui` is the Go-native interactive frontend for `pi-go-agent`; it does not require the TypeScript Pi runtime:
