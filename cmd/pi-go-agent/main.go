@@ -245,6 +245,9 @@ func main() {
 		os.Exit(1)
 	}
 	core.SetSessionID("standalone")
+	browser := &browserSession{}
+	core.SetTools(builtInTools(cwd, browser.tools()...))
+	defer browser.close()
 	defer core.CloseProviderSession()
 	encoder := json.NewEncoder(os.Stdout)
 	if err := core.Run(context.Background(), prompt, func(event agent.Event) { _ = encoder.Encode(event) }); err != nil {

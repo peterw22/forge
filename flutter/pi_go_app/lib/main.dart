@@ -186,7 +186,7 @@ class TranscriptItem {
   final dynamic toolArguments;
   String toolOutput;
   dynamic toolDetails;
-  final List<Uint8List> images;
+  List<Uint8List> images;
   String? safetyStatus, safetyMessage;
   String thinking;
   bool thinkingCollapsed;
@@ -1367,6 +1367,7 @@ class AgentConnection extends ChangeNotifier {
       if (messages[index].id == id) {
         messages[index].toolOutput = text;
         messages[index].toolDetails = result['details'];
+        messages[index].images = _contentImages(result['content']);
         if (text.isNotEmpty) {
           messages[index].text = _toolMarkdown(
             messages[index].toolName ?? '${event['toolName'] ?? 'tool'}',

@@ -48,6 +48,8 @@ type Tool struct {
 	Description string         `json:"description"`
 	Parameters  map[string]any `json:"parameters"`
 	Execute     ToolExecutor
+	// Serial preserves model call order for stateful tools, including their guards.
+	Serial bool `json:"-"`
 }
 
 type ToolExecutor func(context.Context, map[string]any, func(ToolResult)) (ToolResult, error)
@@ -467,7 +469,13 @@ func (a *Agent) executeTools(ctx context.Context, calls []ContentBlock, emit fun
 		emit(Event{Type: EventToolExecutionEnd, ToolCallID: call.ID, ToolName: call.Name, Result: &result, IsError: result.IsError})
 		return nil
 	}
-	if !a.config.ParallelTools || len(calls) == 1 {
+	serial := !a.config.ParallelTools
+	for _, call := range calls {
+		if tool, ok := a.tool(call.Name); ok && tool.Serial {
+			serial = true
+		}
+	}
+	if serial || len(calls) == 1 {
 		for index := range calls {
 			if err := run(index); err != nil {
 				return nil, err
@@ -507,7 +515,7 @@ func (a *Agent) guardTool(ctx context.Context, call ContentBlock, emit func(Even
 	if yolo || guard == nil {
 		return GuardDecision{Allowed: true}
 	}
-	showClassifier := call.Name == "bash" || call.Name == "write" || call.Name == "replace" ||
+	showClassifier := call.Name == "browser_navigate" || call.Name == "bash" || call.Name == "write" || call.Name == "replace" ||
 		(call.Name == "cron" && func() bool {
 			action := strings.ToLower(strings.TrimSpace(stringArgument(call.Arguments, "action")))
 			return action == "create" || action == "delete" || action == "deregister"

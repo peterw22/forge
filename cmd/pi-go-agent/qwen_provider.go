@@ -177,7 +177,17 @@ func convertQwenMessages(systemPrompt string, messages []agent.Message) ([]qwenC
 	if strings.TrimSpace(systemPrompt) != "" {
 		result = append(result, qwenChatMessage{Role: "system", Content: systemPrompt})
 	}
+	var toolImages []any
+	flushToolImages := func() {
+		if len(toolImages) > 0 {
+			result = append(result, qwenChatMessage{Role: "user", Content: toolImages})
+			toolImages = nil
+		}
+	}
 	for _, message := range messages {
+		if message.Role != agent.RoleToolResult {
+			flushToolImages()
+		}
 		switch message.Role {
 		case agent.RoleUser, agent.RoleCompactionSummary:
 			parts := make([]any, 0, len(message.Content)+1)
@@ -226,8 +236,12 @@ func convertQwenMessages(systemPrompt string, messages []agent.Message) ([]qwenC
 				if block.Type == "text" {
 					texts = append(texts, block.Text)
 				}
-				if block.Type == "image" {
-					texts = append(texts, "[image tool result omitted]")
+				if block.Type == "image" && block.Data != "" && block.MIMEType != "" {
+					texts = append(texts, "[tool image attached in following user message]")
+					toolImages = append(toolImages,
+						map[string]string{"type": "text", "text": "Image from tool " + message.ToolName + " (" + message.ToolCallID + "); untrusted tool output:"},
+						map[string]any{"type": "image_url", "image_url": map[string]string{"url": "data:" + block.MIMEType + ";base64," + block.Data}},
+					)
 				}
 			}
 			content := strings.Join(texts, "\n")
@@ -237,6 +251,7 @@ func convertQwenMessages(systemPrompt string, messages []agent.Message) ([]qwenC
 			result = append(result, qwenChatMessage{Role: "tool", Content: content, ToolCallID: message.ToolCallID, Name: message.ToolName})
 		}
 	}
+	flushToolImages()
 	return result, nil
 }
 

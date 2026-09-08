@@ -56,6 +56,9 @@ func replaceSchema() map[string]any {
 }
 
 func objectSchema(required ...string) map[string]any {
+	if required == nil {
+		required = []string{}
+	}
 	properties := map[string]any{}
 	for _, name := range required {
 		properties[name] = map[string]any{"type": "string"}

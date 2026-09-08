@@ -115,25 +115,30 @@ type sessionRuntime struct {
 	completionPush func(string, string)
 	summarizeTurn  func(context.Context, agent.Message) (string, error)
 	cron           *cronManager
+	browser        *browserSession
 }
 
 func newSessionRuntime(id string, core *agent.Agent, sessions *session.Controller) *sessionRuntime {
 	core.SetSessionID(id)
-	return &sessionRuntime{id: id, core: core, sessions: sessions, subscribers: make(map[*subscriber]struct{})}
+	return &sessionRuntime{id: id, core: core, sessions: sessions, subscribers: make(map[*subscriber]struct{}), browser: &browserSession{}}
 }
 func newDraftSessionRuntime(id, root string, core *agent.Agent) *sessionRuntime {
 	runtime := newSessionRuntime(id, core, nil)
 	runtime.root = root
 	return runtime
 }
+func (runtime *sessionRuntime) tools(workspace string) []agent.Tool {
+	extras := runtime.browser.tools()
+	if runtime.cron != nil {
+		extras = append(extras, cronTool(runtime.cron, runtime.id))
+	}
+	return builtInTools(workspace, extras...)
+}
+
 func (runtime *sessionRuntime) bindCron(manager *cronManager) {
 	runtime.cron = manager
 	_, _, workspace := runtime.core.Settings()
-	if manager == nil {
-		runtime.core.SetTools(builtInTools(workspace))
-		return
-	}
-	runtime.core.SetTools(builtInTools(workspace, cronTool(manager, runtime.id)))
+	runtime.core.SetTools(runtime.tools(workspace))
 }
 
 func (runtime *sessionRuntime) ensurePersistedLocked() error {
@@ -479,11 +484,8 @@ func (runtime *sessionRuntime) setCWD(value string) error {
 			return err
 		}
 	}
-	tools := builtInTools(workspace)
-	if runtime.cron != nil {
-		tools = builtInTools(workspace, cronTool(runtime.cron, runtime.id))
-	}
-	runtime.core.SetWorkingDirectory(workspace, systemprompt.Default(workspace), tools)
+	runtime.browser.close()
+	runtime.core.SetWorkingDirectory(workspace, systemprompt.Default(workspace), runtime.tools(workspace))
 	return nil
 }
 func (runtime *sessionRuntime) setModel(model string) error {
@@ -595,6 +597,7 @@ func (runtime *sessionRuntime) close() {
 		s.close()
 	}
 	runtime.tasks.Wait()
+	runtime.browser.close()
 	runtime.core.CloseProviderSession()
 	if runtime.sessions != nil {
 		_ = runtime.sessions.Close()
