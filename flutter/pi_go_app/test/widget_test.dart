@@ -238,6 +238,38 @@ void main() {
     debugDefaultTargetPlatformOverride = null;
   });
 
+  testWidgets('disconnected composer preserves an editable draft', (
+    tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(1024, 768));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    final connection = AgentConnection();
+    await tester.pumpWidget(
+      MaterialApp(home: AgentPage(connection: connection)),
+    );
+
+    final composerFinder = find.byType(TextField).last;
+    final composer = tester.widget<TextField>(composerFinder);
+    expect(connection.connected, isFalse);
+    expect(composer.enabled, isNot(false));
+
+    await tester.enterText(composerFinder, 'draft before reconnect');
+    await tester.pump();
+    expect(composer.controller!.text, 'draft before reconnect');
+
+    connection.setLocalStatus('disconnected · reconnecting in 4s');
+    await tester.pump();
+    await tester.enterText(composerFinder, 'edited while reconnecting');
+    await tester.pump();
+    expect(composer.controller!.text, 'edited while reconnecting');
+    expect(
+      tester
+          .widget<FilledButton>(find.widgetWithText(FilledButton, 'Send'))
+          .onPressed,
+      isNull,
+    );
+  });
+
   test('reconnect backoff doubles and caps at thirty seconds', () {
     expect(reconnectBackoffDelay(0), const Duration(seconds: 1));
     expect(reconnectBackoffDelay(1), const Duration(seconds: 2));

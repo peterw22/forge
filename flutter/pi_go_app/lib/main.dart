@@ -4141,7 +4141,7 @@ class _AgentPageState extends State<AgentPage> with WidgetsBindingObserver {
   }
 
   Future<void> _handleWebPaste(ClipboardReadEvent event) async {
-    if (!kIsWeb || !promptFocus.hasFocus || !agent.connected) return;
+    if (!kIsWeb || !promptFocus.hasFocus) return;
     try {
       // Requesting the event reader prevents the browser's default text paste,
       // so explicitly insert plain text when the clipboard has no image.
@@ -5975,7 +5975,6 @@ class _AgentPageState extends State<AgentPage> with WidgetsBindingObserver {
                   final editor = TextField(
                     controller: prompt,
                     focusNode: promptFocus,
-                    enabled: agent.connected,
                     contentInsertionConfiguration:
                         ContentInsertionConfiguration(
                           allowedMimeTypes: supportedClipboardImageMimeTypes,
