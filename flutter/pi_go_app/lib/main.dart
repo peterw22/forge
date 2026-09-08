@@ -335,50 +335,72 @@ class AgentConnection extends ChangeNotifier {
   Future<void> _receiveQueue = Future<void>.value();
   Future<void> _sendQueue = Future<void>.value();
   Completer<void>? _connectCompleter;
+  int _connectGeneration = 0;
 
   bool get connected => _transport != null && _protocolReady;
 
   Future<void> connect(ConnectionKind kind, String address) async {
-    // Reset transport state without reporting an externally visible disconnect;
-    // the slot-level reconnect controller owns retry scheduling.
-    await disconnect(notifyDisconnected: false);
+    // Only the newest manual/automatic attempt may own this connection. A
+    // delayed reconnect must never cancel or overwrite a newer attempt.
+    final generation = ++_connectGeneration;
+    await disconnect(notifyDisconnected: false, supersedeConnect: false);
+    if (generation != _connectGeneration) return;
     endpointKind = kind;
     endpoint = address.trim();
     status = 'connecting';
     notifyListeners();
+    AgentTransport? candidate;
     try {
-      final transport = switch (kind) {
+      candidate = switch (kind) {
         ConnectionKind.local => await connectLocalTransport(),
         ConnectionKind.unix => await connectUnixTransport(endpoint),
         ConnectionKind.tcp => await connectTcpTransport(endpoint),
         ConnectionKind.websocket => await connectWebSocketTransport(endpoint),
       };
-      await _attach(transport);
-      await _connectCompleter!.future.timeout(const Duration(seconds: 35));
+      if (generation != _connectGeneration) {
+        await candidate.close();
+        return;
+      }
+      final completer = await _attach(candidate);
+      candidate = null;
+      await completer.future.timeout(const Duration(seconds: 35));
+      if (generation != _connectGeneration) return;
     } catch (error) {
-      await disconnect(notifyDisconnected: false);
+      await candidate?.close();
+      if (generation != _connectGeneration) return;
+      await disconnect(notifyDisconnected: false, supersedeConnect: false);
+      if (generation != _connectGeneration) return;
       status = 'connection failed: $error';
       notifyListeners();
       onDisconnected?.call(this);
     }
   }
 
-  Future<void> _attach(AgentTransport transport) async {
+  Future<Completer<void>> _attach(AgentTransport transport) async {
     _sessionToRestore = currentSession;
     _transport = transport;
     _protocolReady = false;
-    _connectCompleter = Completer<void>();
+    final completer = Completer<void>();
+    _connectCompleter = completer;
     status = 'authenticating server…';
     _receiveQueue = Future<void>.value();
     _sendQueue = Future<void>.value();
     _lines = transport.messages.listen(
       (line) {
-        _receiveQueue = _receiveQueue.then((_) => _receive(line));
+        final generation = _connectGeneration;
+        _receiveQueue = _receiveQueue.then((_) async {
+          if (generation != _connectGeneration ||
+              !identical(_transport, transport)) {
+            return;
+          }
+          await _receive(line);
+        });
       },
-      onError: _closed,
-      onDone: _closed,
+      onError: (Object error) => _closedTransport(transport, error),
+      onDone: () => _closedTransport(transport),
     );
     notifyListeners();
+    return completer;
   }
 
   Future<void> _finishAttach() async {
@@ -403,9 +425,17 @@ class AgentConnection extends ChangeNotifier {
     }
   }
 
+  void _closedTransport(AgentTransport transport, [Object? error]) {
+    // A stale socket may report onDone after a newer reconnect has attached.
+    // Never let that callback tear down the replacement connection.
+    if (!identical(_transport, transport)) return;
+    _closed(error);
+  }
+
   void _closed([Object? error]) {
     final transport = _transport;
     _transport = null;
+    _connectGeneration++;
     _protocolReady = false;
     if (_connectCompleter case final completer? when !completer.isCompleted) {
       completer.completeError(
@@ -431,7 +461,11 @@ class AgentConnection extends ChangeNotifier {
     notifyListeners();
   }
 
-  Future<void> disconnect({bool notifyDisconnected = true}) async {
+  Future<void> disconnect({
+    bool notifyDisconnected = true,
+    bool supersedeConnect = true,
+  }) async {
+    if (supersedeConnect) _connectGeneration++;
     final subscription = _lines;
     _lines = null;
     await subscription?.cancel();
@@ -2989,8 +3023,14 @@ class _AgentPageState extends State<AgentPage> with WidgetsBindingObserver {
     }
     slot.reconnectOnLaunch = true;
     slot.cancelReconnect();
+    if (slot.reconnectInProgress) return;
+    slot.reconnectInProgress = true;
     _schedulePersistConnections();
-    await slot.connection.connect(connectionKind, slot.address);
+    try {
+      await slot.connection.connect(connectionKind, slot.address);
+    } finally {
+      slot.reconnectInProgress = false;
+    }
     if (!slot.connection.connected) _scheduleReconnect(slot);
     _schedulePersistConnections();
   }
