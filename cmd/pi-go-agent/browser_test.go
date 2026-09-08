@@ -145,10 +145,10 @@ func TestBrowserImagesReachProviders(t *testing.T) {
 	}
 }
 
-// Explicit opt-in: opens visible Chromium windows and requires install-browser.sh.
-func TestBrowserHeadedIntegration(t *testing.T) {
+// Explicit opt-in: requires Chromium installed via install-browser.sh.
+func TestBrowserHeadlessIntegration(t *testing.T) {
 	if os.Getenv("FORGE_BROWSER_TEST") != "1" {
-		t.Skip("set FORGE_BROWSER_TEST=1 to run headed Chromium")
+		t.Skip("set FORGE_BROWSER_TEST=1 to run headless Chromium")
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {

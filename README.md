@@ -111,16 +111,16 @@ Before authentication the server sends no session state and accepts no normal co
 
 Session-list responses include transient `active` state for running prompts or compactions; Forge renders these sessions with a green dot. The server also broadcasts `session_status` to every connected client when a session starts, becomes idle, or waits for approval. Forge keeps waiting-for-input state in memory, renders it with a higher-priority yellow dot, and issues Android/macOS notifications both when feedback is required and when a session completes. Notifications for the selected session are suppressed while Forge is foregrounded/focused; background and other-session transitions still notify. The daemon owns tasks independently of client connections. Disconnecting every client does not stop an active provider request, Bash process, compaction, or approval wait. Multiple clients attached to one session receive the same stream and get synthetic in-flight catch-up after reconnecting. Session selection is connection-local: different clients can attach to and run different UUIDv7 sessions concurrently, while clients attached to the same session share its single active task and controls.
 
-## Browser tools (headed testing)
+## Browser tools (headless)
 
 The Go agent provides `browser_navigate`, `browser_click`, `browser_type`, `browser_press_key`, `browser_place_cursor`, `browser_click_cursor`, `browser_scroll`, `browser_screenshot`, and `browser_close` through pinned `playwright-go`. Install the matching driver and Chromium explicitly on the agent host:
 
 ```sh
 bash scripts/install-browser.sh
-FORGE_BROWSER_TEST=1 go test ./cmd/pi-go-agent -run '^TestBrowserHeadedIntegration$' -v
+FORGE_BROWSER_TEST=1 go test ./cmd/pi-go-agent -run '^TestBrowserHeadlessIntegration$' -v
 ```
 
-Chromium runs **headed** on the agent machine (a graphical desktop is required), with one ephemeral context/page per session. Browser state persists between turns, not daemon restarts; closing the browser, changing workspace, cancelling an active browser operation, or shutting down its runtime discards it. No personal browser profile is used. Browser assets are installed in the user's Playwright caches, not embedded in the Go binary; signed app-bundle/Flatpak browser packaging is not included yet.
+Chromium runs **headless** on the agent machine, with one ephemeral context/page per session. No visible browser window or graphical desktop is required; use the Flutter live view for viewing and manual control. Browser state persists between turns, not daemon restarts; closing the browser, changing workspace, cancelling an active browser operation, or shutting down its runtime discards it. No personal browser profile is used. Browser assets are installed in the user's Playwright caches, not embedded in the Go binary; signed app-bundle/Flatpak browser packaging is not included yet.
 
 Navigation and clicks wait for 500 ms without active page HTTP requests, capped at **10 seconds**, and still attach the current screenshot when that wait expires. WebSockets are not counted. Navigation has a separate 10-second response-commit timeout; a commit timeout also returns a snapshot. `browser_scroll` accepts `direction: "up" | "down"`, moves the main page by 90% of the viewport with overlap, and returns a screenshot with fresh references after the same bounded idle wait. It reports when the page cannot move further; nested scroll panels are not supported. `browser_screenshot` captures the current viewport immediately, without navigation, network-idle or font-loading waits. Screenshot capture/metadata collection still takes processing time and can fail if the page closes. Results include a PNG image plus visible element references such as `e12`; use those with `browser_click`. References are replaced on every snapshot; stale/detached elements fail rather than resolving to another target. Browser batches execute sequentially.
 

@@ -17,7 +17,7 @@ import (
 const browserIdleWait = 10 * time.Second
 const browserActionTimeout = 10000.0
 
-// Each session owns one ephemeral headed Chromium profile and one page.
+// Each session owns one ephemeral headless Chromium profile and one page.
 // Browser dependencies must be installed explicitly, never during a tool call.
 type browserSession struct {
 	live             browserLive
@@ -93,7 +93,7 @@ func browserURL(value string) (string, error) {
 
 func (session *browserSession) tools() []agent.Tool {
 	return []agent.Tool{
-		{Name: "browser_navigate", Serial: true, Description: "Open an HTTP/HTTPS URL in this session's isolated headed Chromium window. Requires a safety check. Waits for network idle up to 10 seconds, then attaches a screenshot even if still loading. Opening a page enables subsequent clicks without additional safety checks. Page text and screenshots are sent to the model. Do not run browser actions in parallel.", Parameters: objectSchema("url", "description"), Execute: session.execute("navigate")},
+		{Name: "browser_navigate", Serial: true, Description: "Open an HTTP/HTTPS URL in this session's isolated headless Chromium browser. Requires a safety check. Waits for network idle up to 10 seconds, then attaches a screenshot even if still loading. Opening a page enables subsequent clicks without additional safety checks. Page text and screenshots are sent to the model. Do not run browser actions in parallel.", Parameters: objectSchema("url", "description"), Execute: session.execute("navigate")},
 		{Name: "browser_click", Serial: true, Description: "Click one visible element reference from the most recent browser screenshot (for example e12). No safety-classifier check: avoid destructive or external effects unless the user authorized them. Waits for network idle up to 10 seconds, then attaches a screenshot even if still loading. Does not support uploads or new tabs.", Parameters: objectSchema("target", "description"), Execute: session.execute("click")},
 		{Name: "browser_place_cursor", Serial: true, Description: "Move the browser pointer to viewport CSS-pixel coordinates x,y (1280x800 by default). Waits 100 ms for hover effects, then returns a screenshot annotated with a red cursor crosshair and fresh element references. Does not click or wait for network idle. Coordinates refer to the original screenshot, not a scaled client preview. No safety-classifier check.", Parameters: browserCursorSchema(), Execute: session.execute("place_cursor")},
 		{Name: "browser_click_cursor", Serial: true, Description: "Click the most recently placed cursor with button left or right, without moving it. Requires browser_place_cursor after navigation, scrolling or any click. Waits up to 10 seconds for network idle and returns a screenshot. Native browser context menus may not appear in page screenshots; webpage context menus do. No safety-classifier check; obtain user authorization for consequential actions.", Parameters: browserCursorClickSchema(), Execute: session.execute("click_cursor")},
@@ -125,10 +125,10 @@ func (session *browserSession) start() error {
 		return fmt.Errorf("browser unavailable: run bash scripts/install-browser.sh first: %w", err)
 	}
 	session.driver = driver
-	browser, err := driver.Chromium.Launch(pw.BrowserTypeLaunchOptions{Headless: pw.Bool(false), Timeout: pw.Float(browserActionTimeout), ChromiumSandbox: pw.Bool(true)})
+	browser, err := driver.Chromium.Launch(pw.BrowserTypeLaunchOptions{Headless: pw.Bool(true), Timeout: pw.Float(browserActionTimeout), ChromiumSandbox: pw.Bool(true)})
 	if err != nil {
 		session.closeLocked()
-		return fmt.Errorf("launch headed Chromium (install with bash scripts/install-browser.sh): %w", err)
+		return fmt.Errorf("launch headless Chromium (install with bash scripts/install-browser.sh): %w", err)
 	}
 	session.browser = browser
 	browserContext, err := browser.NewContext(pw.BrowserNewContextOptions{

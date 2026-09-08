@@ -70,7 +70,7 @@ func TestBrowserLiveCommandsRequireAttachedSession(t *testing.T) {
 	}
 }
 
-func TestBrowserLiveHeadedIntegration(t *testing.T) {
+func TestBrowserLiveHeadlessIntegration(t *testing.T) {
 	if os.Getenv("FORGE_BROWSER_TEST") != "1" {
 		t.Skip("set FORGE_BROWSER_TEST=1")
 	}
