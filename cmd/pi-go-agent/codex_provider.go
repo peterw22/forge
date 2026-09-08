@@ -617,8 +617,7 @@ func (consumer *codexEventConsumer) consume(event codexResponseEvent) error {
 		consumer.stopReason = "stop"
 		if event.Type == "response.incomplete" || event.Response != nil && event.Response.Status == "incomplete" {
 			consumer.stopReason = "length"
-		}
-		if len(consumer.tools) > 0 {
+		} else if len(consumer.tools) > 0 {
 			consumer.stopReason = "toolUse"
 		}
 		if event.Response != nil {

@@ -23,8 +23,17 @@ func (provider *safetyTestProvider) Stream(_ context.Context, request agent.Requ
 	provider.requests = append(provider.requests, request)
 	provider.mu.Unlock()
 	events := make(chan agent.ProviderEvent, 2)
-	events <- agent.ProviderEvent{Type: agent.ProviderTextDelta, Delta: provider.decision}
-	events <- agent.ProviderEvent{Type: agent.ProviderDone, StopReason: "stop"}
+	var arguments map[string]any
+	if err := json.Unmarshal([]byte(provider.decision), &arguments); err != nil {
+		events <- agent.ProviderEvent{Type: agent.ProviderError, Err: err}
+	} else if len(request.Tools) != 1 {
+		events <- agent.ProviderEvent{Type: agent.ProviderError}
+	} else {
+		events <- agent.ProviderEvent{Type: agent.ProviderToolCall, ToolCall: agent.ContentBlock{
+			Type: "toolCall", ID: "output", Name: request.Tools[0].Name, Arguments: arguments,
+		}}
+	}
+	events <- agent.ProviderEvent{Type: agent.ProviderDone, StopReason: "toolUse"}
 	close(events)
 	errs := make(chan error)
 	close(errs)
@@ -135,7 +144,7 @@ func TestSafetyClassifiesBashWithConfiguredModelLow(t *testing.T) {
 	if decision.Allowed || decision.Reason != "deletes workspace files" {
 		t.Fatalf("decision=%#v", decision)
 	}
-	if len(provider.requests) != 1 || provider.requests[0].Model != defaultClassifierModel || provider.requests[0].Thinking != safetyThinking || len(provider.requests[0].Tools) != 0 {
+	if len(provider.requests) != 1 || provider.requests[0].Model != defaultClassifierModel || provider.requests[0].Thinking != safetyThinking || len(provider.requests[0].Tools) != 1 || provider.requests[0].Tools[0].Name != "submit_safety_decision" {
 		t.Fatalf("request=%#v", provider.requests)
 	}
 }

@@ -21,7 +21,7 @@ func TestSummarizeAssistantTurnUsesClassifierAndValidatesSentence(t *testing.T) 
 	if summary != "Implemented encrypted completion summaries." {
 		t.Fatalf("summary = %q", summary)
 	}
-	if len(provider.requests) != 1 || provider.requests[0].Model != "gpt-5.6-sol" || provider.requests[0].Thinking != safetyThinking {
+	if len(provider.requests) != 1 || provider.requests[0].Model != "gpt-5.6-sol" || provider.requests[0].Thinking != safetyThinking || len(provider.requests[0].Tools) != 1 || provider.requests[0].Tools[0].Name != "submit_turn_summary" {
 		t.Fatalf("request = %#v", provider.requests)
 	}
 	requestText := provider.requests[0].Messages[0].Content[0].Text
