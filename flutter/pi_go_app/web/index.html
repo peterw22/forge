@@ -19,10 +19,11 @@
   <meta charset="UTF-8">
   <meta content="IE=Edge" http-equiv="X-UA-Compatible">
   <meta name="description" content="Forge encrypted remote agent frontend">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; connect-src 'self' https: wss: https://fonts.googleapis.com https://fonts.gstatic.com; font-src 'self' data: https://fonts.gstatic.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; script-src 'self' 'unsafe-inline'; img-src 'self' data: blob:">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; connect-src 'self' https: wss: https://fonts.googleapis.com https://fonts.gstatic.com https://www.gstatic.com; font-src 'self' data: https://fonts.gstatic.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval' https://www.gstatic.com; img-src 'self' data: blob:">
 
   <!-- iOS meta tags & icons -->
-  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="application-name" content="Forge">
   <meta name="apple-mobile-web-app-status-bar-style" content="black">
   <meta name="apple-mobile-web-app-title" content="Forge">
   <link rel="apple-touch-icon" href="icons/Icon-192.png">
@@ -42,6 +43,15 @@
     For more details:
     * https://docs.flutter.dev/platform-integration/web/initialization
   -->
-  <script src="flutter_bootstrap.js" async></script>
+  <script>
+    if ('serviceWorker' in navigator) {
+      window.addEventListener('load', () => {
+        navigator.serviceWorker.register('forge_service_worker.js?v=5', {
+          updateViaCache: 'none',
+        });
+      });
+    }
+  </script>
+  <script src="flutter_bootstrap.js?v=5" async></script>
 </body>
 </html>
