@@ -58,17 +58,16 @@ class _PiGoAppState extends State<PiGoApp> {
   @override
   Widget build(BuildContext context) => ListenableBuilder(
     listenable: fonts,
-    builder: (context, _) => MaterialApp(
-      debugShowCheckedModeBanner: false,
-      title: 'Forge',
-      theme: _theme(Brightness.light),
-      darkTheme: _theme(Brightness.dark),
-      themeMode: ThemeMode.system,
-      builder: (context, child) {
-        unawaited(fonts.ensureLocale(Localizations.localeOf(context)));
-        return child ?? const SizedBox.shrink();
-      },
-      home: const AgentPage(),
+    builder: (context, _) => ForgeFontScope(
+      controller: fonts,
+      child: MaterialApp(
+        debugShowCheckedModeBanner: false,
+        title: 'Forge',
+        theme: _theme(Brightness.light),
+        darkTheme: _theme(Brightness.dark),
+        themeMode: ThemeMode.system,
+        home: const AgentPage(),
+      ),
     ),
   );
 }
@@ -191,6 +190,9 @@ class TranscriptItem {
   String? safetyStatus, safetyMessage;
   String thinking;
   bool thinkingCollapsed;
+  int fontTextScanned = 0;
+  int fontThinkingScanned = 0;
+  bool fontRoleScanned = false;
 }
 
 String _sourceLanguageForPath(String path) {
@@ -5549,7 +5551,45 @@ class _AgentPageState extends State<AgentPage> with WidgetsBindingObserver {
     );
   }
 
+  void _observeMessageFonts(TranscriptItem item) {
+    final fonts = ForgeFontScope.maybeOf(context);
+    if (fonts == null) return;
+    final locale = Localizations.localeOf(context);
+
+    if (!item.fontRoleScanned) {
+      item.fontRoleScanned = true;
+      fonts.observeText(item.role, locale: locale);
+    }
+
+    void observeNewText(
+      String value,
+      int alreadyScanned,
+      void Function(int) save,
+    ) {
+      if (alreadyScanned > value.length) alreadyScanned = 0;
+      if (alreadyScanned < value.length) {
+        fonts.observeText(
+          alreadyScanned == 0 ? value : value.substring(alreadyScanned),
+          locale: locale,
+        );
+      }
+      save(value.length);
+    }
+
+    observeNewText(
+      item.text,
+      item.fontTextScanned,
+      (length) => item.fontTextScanned = length,
+    );
+    observeNewText(
+      item.thinking,
+      item.fontThinkingScanned,
+      (length) => item.fontThinkingScanned = length,
+    );
+  }
+
   Widget _message(TranscriptItem item) {
+    _observeMessageFonts(item);
     final collapsible =
         item.role.startsWith('Tool ·') || item.role == 'Compaction summary';
     final card = Container(
