@@ -33,6 +33,9 @@ func TestCompletions(t *testing.T) {
 	if got, want := completions("/model gpt-5.6-t"), []string{"/model gpt-5.6-terra"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("model completion = %#v, want %#v", got, want)
 	}
+	if got, want := completions("/model gpt-6"), []string{"/model gpt-6-astra"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("Astra model completion = %#v, want %#v", got, want)
+	}
 	if got := completions("ordinary prompt"); got != nil {
 		t.Fatalf("prompt completion = %#v, want nil", got)
 	}

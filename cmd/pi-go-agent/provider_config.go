@@ -437,6 +437,7 @@ func configuredModels(auth *codexAuthManager) ([]modelInfo, error) {
 		"gpt-5.6-luna",
 		"gpt-5.6-sol",
 		"gpt-5.6-terra",
+		"gpt-6-astra",
 	}
 	models := make([]modelInfo, 0, len(codexModels)*2)
 	for _, id := range codexModels {

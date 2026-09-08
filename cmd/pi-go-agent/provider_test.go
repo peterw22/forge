@@ -48,20 +48,50 @@ func TestCodexFastVariantUsesPriorityServiceTier(t *testing.T) {
 	}
 }
 
+func TestCodexAstraModelPassesThroughExistingRequestInfra(t *testing.T) {
+	model, tier := resolveCodexFastVariant("gpt-6-astra")
+	if model != "gpt-6-astra" || tier != "" {
+		t.Fatalf("model=%q tier=%q", model, tier)
+	}
+	body, err := buildCodexRequest(agent.Request{Model: model, Thinking: "max"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if body.Model != "gpt-6-astra" {
+		t.Fatalf("model was rewritten: %#v", body)
+	}
+	reasoning, ok := body.Reasoning.(map[string]string)
+	if !ok || reasoning["effort"] != "max" {
+		t.Fatalf("reasoning=%#v", body.Reasoning)
+	}
+
+	fastModel, fastTier := resolveCodexFastVariant("gpt-6-astra-fast")
+	if fastModel != "gpt-6-astra" || fastTier != "priority" {
+		t.Fatalf("fast model=%q tier=%q", fastModel, fastTier)
+	}
+}
+
 func TestConfiguredModelsIncludeCodexFastVariants(t *testing.T) {
 	auth := newCodexAuthManagerAt(filepath.Join(t.TempDir(), "auth.json"), defaultCodexAuthEndpoints, http.DefaultClient)
 	models, err := configuredModels(auth)
 	if err != nil {
 		t.Fatal(err)
 	}
-	found := false
+	foundTerraFast := false
+	foundAstra := false
+	foundAstraFast := false
 	for _, model := range models {
-		if model.ID == "gpt-5.6-terra-fast" && model.Provider == codexProviderID && strings.Contains(model.Label, "Fast") {
-			found = true
+		switch model.ID {
+		case "gpt-5.6-terra-fast":
+			foundTerraFast = model.Provider == codexProviderID && strings.Contains(model.Label, "Fast")
+		case "gpt-6-astra":
+			foundAstra = model.Provider == codexProviderID
+		case "gpt-6-astra-fast":
+			foundAstraFast = model.Provider == codexProviderID && strings.Contains(model.Label, "Fast")
 		}
 	}
-	if !found {
-		t.Fatalf("fast variant missing: %#v", models)
+	if !foundTerraFast || !foundAstra || !foundAstraFast {
+		t.Fatalf("built-in Codex variants missing: %#v", models)
 	}
 }
 

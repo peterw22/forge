@@ -306,6 +306,7 @@ class AgentConnection extends ChangeNotifier {
       'openai-codex',
       'OpenAI Codex · gpt-5.6-terra',
     ),
+    ProviderModel('gpt-6-astra', 'openai-codex', 'OpenAI Codex · gpt-6-astra'),
   ];
   final Map<String, bool> sessionActive = {};
   final Set<String> sessionsWaitingInput = {};
