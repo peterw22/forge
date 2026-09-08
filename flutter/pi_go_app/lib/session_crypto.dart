@@ -98,7 +98,8 @@ class ClientSecureSession {
         // without an explicit positive sign, so high-bit coordinates need a
         // leading zero there. Apple CryptoKit expects canonical 32-byte P-256
         // coordinates and rejects that Android-only sign byte.
-        if (defaultTargetPlatform == TargetPlatform.android &&
+        if (!kIsWeb &&
+            defaultTargetPlatform == TargetPlatform.android &&
             bytes.isNotEmpty &&
             (bytes.first & 0x80) != 0) {
           return <int>[0, ...bytes];
@@ -206,8 +207,17 @@ class ClientSecureSession {
   }
 
   static Uint8List _nonce(Uint8List prefix, int sequence) {
-    final value = ByteData(12)..setUint64(4, sequence, Endian.big);
-    return Uint8List.fromList([...prefix, ...value.buffer.asUint8List(4, 8)]);
+    if (sequence < 0 || sequence > 0x1fffffffffffff) {
+      throw StateError(
+        'Encrypted message sequence exceeds Web-safe integer range',
+      );
+    }
+    // dart2js does not implement ByteData.setUint64. Split the sequence into
+    // two 32-bit words so this nonce encoding is identical on Web and native.
+    final value = ByteData(8)
+      ..setUint32(0, sequence ~/ 0x100000000, Endian.big)
+      ..setUint32(4, sequence % 0x100000000, Endian.big);
+    return Uint8List.fromList([...prefix, ...value.buffer.asUint8List()]);
   }
 
   static List<int> _canonicalCoordinate(List<int> value) {
