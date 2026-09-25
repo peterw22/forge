@@ -35,7 +35,7 @@ const (
 
 var errInterrupt = errors.New("terminal interrupt")
 
-var models = []string{"gpt-5.3-codex-spark", "gpt-5.5", "gpt-5.6-luna", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-6-astra"}
+var models = []string{"gpt-5.6-luna", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-6-astra", "gpt-6-sol", "gpt-6-luna"}
 var commands = []string{"/abort", "/clear", "/compact", "/cwd", "/exit", "/model", "/name", "/new", "/quit", "/sessions", "/thinking"}
 
 type backendCommand struct {

@@ -89,7 +89,6 @@ func containsChoice(choices []string, value string) bool {
 }
 func richCompletions(value string) []string {
 	commands := []string{"/abort", "/clear", "/compact", "/cwd", "/exit", "/model", "/name", "/new", "/quit", "/sessions", "/thinking"}
-	models := []string{"gpt-5.3-codex-spark", "gpt-5.5", "gpt-5.6-luna", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-6-astra"}
 	levels := []string{"off", "minimal", "low", "medium", "high", "xhigh", "max"}
 	prefix, choices := "", commands
 	if value == "/model" || value == "/model " {

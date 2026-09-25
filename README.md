@@ -1,6 +1,6 @@
 # Go Codex provider bridge for Pi
 
-This project registers a `go-codex` Pi model provider. Its current catalog is `gpt-5.3-codex-spark`, `gpt-5.5`, `gpt-5.6-luna`, `gpt-5.6-sol`, and `gpt-5.6-terra`. It is a migration bridge, not a replacement for Pi's built-in `openai-codex` provider.
+This project registers a `go-codex` Pi model provider. Its current catalog is `gpt-5.6-luna`, `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-6-sol`, and `gpt-6-luna`. GPT-5.5 and earlier are no longer advertised. It is a migration bridge, not a replacement for Pi's built-in `openai-codex` provider.
 
 ```text
 Pi agent core → go-codex provider extension → Go JSONL sidecar → Codex WebSocket/SSE
@@ -49,7 +49,7 @@ PI_GO_CODEX_BIN=/absolute/path/to/pi-go-codex ./pi-test.sh -e ../go/extensions/g
 For the legacy TypeScript provider bridge only, if `pi` is not the executable that owns your Codex login, provide an alternate credential command. It must print only a valid bearer token to stdout:
 
 ```bash
-PI_GO_CODEX_CREDENTIAL_COMMAND='/absolute/path/to/pi auth print-bearer-token --provider openai-codex --model gpt-5.5 --min-expiry 5m' \
+PI_GO_CODEX_CREDENTIAL_COMMAND='/absolute/path/to/pi auth print-bearer-token --provider openai-codex --model gpt-6-sol --min-expiry 5m' \
   ./pi-test.sh -e ../go/extensions/go-codex.ts
 ```
 

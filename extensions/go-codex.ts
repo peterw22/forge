@@ -15,14 +15,13 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 const PROVIDER_ID = "go-codex";
 const API_ID = "go-codex-bridge";
-const DEFAULT_MODEL = "gpt-5.5";
+const DEFAULT_MODEL = "gpt-6-sol";
 const STANDARD_THINKING = { off: "none", minimal: "minimal", low: "low", medium: "medium", high: "high" } as const;
-const LEGACY_THINKING = { ...STANDARD_THINKING, minimal: "low" } as const;
 const GPT_56_THINKING = { ...STANDARD_THINKING, xhigh: "xhigh", max: "max" } as const;
 const extensionDir = dirname(fileURLToPath(import.meta.url));
 const defaultBinary = resolve(extensionDir, "..", "pi-go-codex");
 const defaultCredentialCommand =
-	"pi auth print-bearer-token --provider openai-codex --model gpt-5.5 --min-expiry 5m";
+	"pi auth print-bearer-token --provider openai-codex --model gpt-6-sol --min-expiry 5m";
 
 type BridgeRequest = {
 	model: string;
@@ -300,20 +299,20 @@ export default function (pi: ExtensionAPI): void {
 		api: API_ID,
 		models: [
 			{
-				id: "gpt-5.3-codex-spark",
-				name: "GPT-5.3 Codex Spark (Go Codex Bridge)",
+				id: "gpt-6-luna",
+				name: "GPT-6 Luna (Go Codex Bridge)",
 				reasoning: true,
-				thinkingLevelMap: LEGACY_THINKING,
+				thinkingLevelMap: GPT_56_THINKING,
 				input: ["text"],
 				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-				contextWindow: 128000,
+				contextWindow: 272000,
 				maxTokens: 128000,
 			},
 			{
 				id: DEFAULT_MODEL,
-				name: "GPT-5.5 (Go Codex Bridge)",
+				name: "GPT-6 Sol (Go Codex Bridge)",
 				reasoning: true,
-				thinkingLevelMap: LEGACY_THINKING,
+				thinkingLevelMap: GPT_56_THINKING,
 				input: ["text"],
 				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 				contextWindow: 272000,

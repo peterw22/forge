@@ -154,7 +154,7 @@ func main() {
 	var config Config
 	var providerMode bool
 	flag.StringVar(&config.Endpoint, "endpoint", defaultEndpoint, "Codex Responses endpoint")
-	flag.StringVar(&config.Model, "model", "gpt-5.5", "Codex model ID")
+	flag.StringVar(&config.Model, "model", "gpt-6-sol", "Codex model ID")
 	flag.StringVar(&config.Prompt, "prompt", "", "standalone prompt to send")
 	flag.StringVar(&config.SessionID, "session-id", "", "optional request/session identifier")
 	flag.StringVar(&config.Transport, "transport", "auto", "Codex transport: auto, websocket, websocket-cached, or sse")

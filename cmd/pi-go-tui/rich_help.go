@@ -12,7 +12,7 @@ func richHelp(input string) []tui.Suggestion {
 	if strings.HasPrefix(input, "/model") {
 		prefix := strings.TrimSpace(strings.TrimPrefix(input, "/model"))
 		var out []tui.Suggestion
-		for _, model := range []string{"gpt-5.3-codex-spark", "gpt-5.5", "gpt-5.6-luna", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-6-astra"} {
+		for _, model := range models {
 			if strings.HasPrefix(model, prefix) {
 				out = append(out, tui.Suggestion{Value: "/model " + model, Description: "switch model and start a new session"})
 			}

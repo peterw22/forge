@@ -293,12 +293,8 @@ class AgentConnection extends ChangeNotifier {
   String authVerificationURI = '';
   List<APIProviderConfig> apiProviders = [];
   List<ProviderModel> availableModels = const [
-    ProviderModel(
-      'gpt-5.3-codex-spark',
-      'openai-codex',
-      'OpenAI Codex · gpt-5.3-codex-spark',
-    ),
-    ProviderModel('gpt-5.5', 'openai-codex', 'OpenAI Codex · gpt-5.5'),
+    ProviderModel('gpt-6-sol', 'openai-codex', 'OpenAI Codex · gpt-6-sol'),
+    ProviderModel('gpt-6-luna', 'openai-codex', 'OpenAI Codex · gpt-6-luna'),
     ProviderModel(
       'gpt-5.6-luna',
       'openai-codex',

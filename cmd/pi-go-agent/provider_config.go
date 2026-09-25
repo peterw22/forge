@@ -432,12 +432,12 @@ func (auth *codexAuthManager) FetchAPIModels(ctx context.Context, name string) (
 
 func configuredModels(auth *codexAuthManager) ([]modelInfo, error) {
 	codexModels := []string{
-		"gpt-5.3-codex-spark",
-		"gpt-5.5",
 		"gpt-5.6-luna",
 		"gpt-5.6-sol",
 		"gpt-5.6-terra",
 		"gpt-6-astra",
+		"gpt-6-sol",
+		"gpt-6-luna",
 	}
 	models := make([]modelInfo, 0, len(codexModels)*2)
 	for _, id := range codexModels {
