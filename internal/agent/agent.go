@@ -91,6 +91,10 @@ type Request struct {
 	ToolGuard        ToolGuard
 	YOLO             bool
 	OnToolEvent      func(Event)
+	// GuardTool applies the agent's full tool policy (YOLO, classifier, and
+	// manual approval) to tools a provider executes on its own, such as CLI
+	// providers calling back through MCP. Nil when not driven by an Agent.
+	GuardTool func(ctx context.Context, call ContentBlock) GuardDecision
 	// SaveProviderConversation persists a successfully completed CLI turn's
 	// opaque conversation ID alongside the local session transcript.
 	SaveProviderConversation func(provider, model, cwd, id string) error
@@ -401,6 +405,7 @@ func (a *Agent) runProvider(ctx context.Context, emit func(Event)) (Message, []C
 		callback := a.config.OnProviderToolEvent
 		request.OnToolEvent = func(event Event) { callback(event); emit(event) }
 	}
+	request.GuardTool = func(ctx context.Context, call ContentBlock) GuardDecision { return a.guardTool(ctx, call, emit) }
 	events, providerErr := a.config.Provider.Stream(ctx, request)
 	assistant := Message{Role: RoleAssistant, Timestamp: time.Now().UnixMilli()}
 	emit(Event{Type: EventMessageStart, Message: &assistant})

@@ -70,7 +70,7 @@ func (p *claudeCLIProvider) stream(ctx context.Context, req agent.Request, event
 		return err
 	}
 	var verified atomic.Bool
-	bridge, err := newMCPGuardedTurnBridgeWithYOLO(ctx, req.WorkingDirectory, req.ToolGuard, req.Messages, req.Tools, false, verified.Load, req.YOLO, req.OnToolEvent)
+	bridge, err := newProviderMCPTurnBridge(ctx, req, false, verified.Load)
 	if err != nil {
 		return err
 	}

@@ -51,6 +51,28 @@ func newMCPGuardedTurnBridgeWithYOLO(ctx context.Context, workspace string, guar
 	if guard == nil {
 		return nil, errors.New("agy MCP classifier is required")
 	}
+	decide := func(ctx context.Context, call agent.ContentBlock) agent.GuardDecision {
+		if yolo {
+			return agent.GuardDecision{Allowed: true}
+		}
+		return guard.Check(ctx, agent.GuardRequest{Tool: call.Name, Arguments: call.Arguments, WorkingDirectory: workspace, Messages: messages})
+	}
+	return newMCPTurnBridge(ctx, workspace, decide, tools, verifyAgyPolicy, ready, notify...)
+}
+
+// newProviderMCPTurnBridge prefers the agent's own tool policy so a classifier
+// rejection can still be manually approved, exactly as for native tool calls.
+func newProviderMCPTurnBridge(ctx context.Context, req agent.Request, verifyAgyPolicy bool, ready func() bool) (*agyTurnBridge, error) {
+	if req.GuardTool == nil {
+		return newMCPGuardedTurnBridgeWithYOLO(ctx, req.WorkingDirectory, req.ToolGuard, req.Messages, req.Tools, verifyAgyPolicy, ready, req.YOLO, req.OnToolEvent)
+	}
+	if req.ToolGuard == nil {
+		return nil, errors.New("agy MCP classifier is required")
+	}
+	return newMCPTurnBridge(ctx, req.WorkingDirectory, req.GuardTool, req.Tools, verifyAgyPolicy, ready, req.OnToolEvent)
+}
+
+func newMCPTurnBridge(ctx context.Context, workspace string, decide func(context.Context, agent.ContentBlock) agent.GuardDecision, tools []agent.Tool, verifyAgyPolicy bool, ready func() bool, notify ...func(agent.Event)) (*agyTurnBridge, error) {
 	tokenBytes := make([]byte, 32)
 	if _, err := rand.Read(tokenBytes); err != nil {
 		return nil, err
@@ -100,12 +122,10 @@ func newMCPGuardedTurnBridgeWithYOLO(ctx context.Context, workspace string, guar
 						break
 					}
 				}
-				if !yolo {
-					decision := guard.Check(r.Context(), agent.GuardRequest{Tool: tool.Name, Arguments: invocation.Arguments, WorkingDirectory: workspace, Messages: messages})
-					if !decision.Allowed {
-						result.Content[0].Text += "; " + decision.Reason
-						break
-					}
+				decision := decide(r.Context(), agent.ContentBlock{Type: "toolCall", ID: callID, Name: tool.Name, Arguments: invocation.Arguments})
+				if !decision.Allowed {
+					result.Content[0].Text += "; " + decision.Reason
+					break
 				}
 				value, err := tool.Execute(r.Context(), invocation.Arguments, func(update agent.ToolResult) {
 					emit(agent.Event{Type: agent.EventToolExecutionUpdate, ToolCallID: callID, ToolName: tool.Name, Result: &update})

@@ -69,7 +69,7 @@ func (p *agyProvider) stream(ctx context.Context, req agent.Request, events chan
 	if req.OnToolEvent == nil {
 		return errors.New("agy requires tool event observer")
 	}
-	bridge, err := newMCPGuardedTurnBridgeWithYOLO(ctx, req.WorkingDirectory, req.ToolGuard, req.Messages, req.Tools, true, nil, req.YOLO, req.OnToolEvent)
+	bridge, err := newProviderMCPTurnBridge(ctx, req, true, nil)
 	if err != nil {
 		return err
 	}
