@@ -14,6 +14,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:super_clipboard/super_clipboard.dart';
 import 'package:url_launcher/url_launcher.dart';
 
+import 'browser_workspace.dart';
 import 'browser_live.dart';
 import 'clipboard_images.dart';
 import 'feedback_notifications.dart';
@@ -4627,67 +4628,49 @@ class _AgentPageState extends State<AgentPage> with WidgetsBindingObserver {
   Widget build(BuildContext context) {
     return Scaffold(
       body: SafeArea(
-        child: Column(
-          children: [
-            _connectionBar(),
-            const Divider(height: 1),
-            Expanded(
-              child: Stack(
-                children: [
-                  if (agent.messages.isEmpty)
-                    const Center(
-                      child: Text(
-                        'Connect to pi-go-agent and start a conversation.',
+        child: AdaptiveBrowserWorkspace(
+          controller: agent.browserLive,
+          chat: Column(
+            children: [
+              _connectionBar(),
+              const Divider(height: 1),
+              Expanded(
+                child: Stack(
+                  children: [
+                    if (agent.messages.isEmpty)
+                      const Center(
+                        child: Text(
+                          'Connect to pi-go-agent and start a conversation.',
+                        ),
+                      ),
+                    NotificationListener<ScrollNotification>(
+                      onNotification: _handleTranscriptScroll,
+                      child: ListView.builder(
+                        controller: scroll,
+                        padding: const EdgeInsets.all(20),
+                        itemCount: agent.messages.length,
+                        itemBuilder: (_, index) =>
+                            _message(agent.messages[index]),
                       ),
                     ),
-                  NotificationListener<ScrollNotification>(
-                    onNotification: _handleTranscriptScroll,
-                    child: ListView.builder(
-                      controller: scroll,
-                      padding: const EdgeInsets.all(20),
-                      itemCount: agent.messages.length,
-                      itemBuilder: (_, index) =>
-                          _message(agent.messages[index]),
-                    ),
-                  ),
-                  Positioned(
-                    right: 16,
-                    bottom: _showScrollToBottom ? 72 : 16,
-                    child: ListenableBuilder(
-                      listenable: agent.browserLive,
-                      builder: (context, _) => agent.browserLive.open
-                          ? FloatingActionButton.small(
-                              heroTag: 'browser-live-view',
-                              tooltip: 'Browser live view',
-                              onPressed: () => Navigator.of(context).push(
-                                MaterialPageRoute<void>(
-                                  builder: (_) => BrowserLiveView(
-                                    controller: agent.browserLive,
-                                  ),
-                                ),
-                              ),
-                              child: const Icon(Icons.web),
-                            )
-                          : const SizedBox.shrink(),
-                    ),
-                  ),
-                  if (_showScrollToBottom)
-                    Positioned(
-                      right: 16,
-                      bottom: 16,
-                      child: FloatingActionButton.small(
-                        heroTag: 'scroll-to-transcript-bottom',
-                        tooltip: 'Scroll to bottom',
-                        onPressed: _scrollToBottom,
-                        child: const Icon(Icons.keyboard_double_arrow_down),
+                    if (_showScrollToBottom)
+                      Positioned(
+                        right: 16,
+                        bottom: 16,
+                        child: FloatingActionButton.small(
+                          heroTag: 'scroll-to-transcript-bottom',
+                          tooltip: 'Scroll to bottom',
+                          onPressed: _scrollToBottom,
+                          child: const Icon(Icons.keyboard_double_arrow_down),
+                        ),
                       ),
-                    ),
-                ],
+                  ],
+                ),
               ),
-            ),
-            const Divider(height: 1),
-            _composer(),
-          ],
+              const Divider(height: 1),
+              _composer(),
+            ],
+          ),
         ),
       ),
     );

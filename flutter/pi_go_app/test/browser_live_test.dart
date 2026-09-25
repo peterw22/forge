@@ -72,7 +72,7 @@ void main() {
     connection.dispose();
   });
 
-  test('stale input errors preserve control and displayed frames', () {
+  test('stale input errors preserve control and displayed frames', () async {
     final sent = <Map<String, Object?>>[];
     final live = BrowserLiveController(sent.add);
     live.setSession('one');
@@ -80,7 +80,9 @@ void main() {
       'browser': {'open': true, 'instance': 'a', 'controlled': true},
     });
     live.watching = true;
+    final acquired = live.takeControl();
     live.receive({
+      'id': sent.last['id'],
       'controlToken': 'lease',
       'browserFrame': {
         ...geometry,
@@ -89,6 +91,7 @@ void main() {
         'jpeg': 'AQ==',
       },
     });
+    await acquired;
     live.receive({'command': 'browser_input', 'error': 'stale browser frame'});
     expect(live.canControl, isTrue);
     expect(live.jpeg, [1]);

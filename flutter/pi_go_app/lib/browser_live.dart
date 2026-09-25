@@ -12,6 +12,7 @@ class BrowserLiveController extends ChangeNotifier {
   String session = '', instance = '', token = '', error = '';
   Map<String, dynamic>? frame;
   Uint8List? jpeg;
+  bool _acceptControl = false;
   int _id = 0;
   final Map<String, Completer<void>> _pending = {};
 
@@ -24,7 +25,7 @@ class BrowserLiveController extends ChangeNotifier {
   }
 
   void reset() {
-    open = controlled = watching = false;
+    open = controlled = watching = _acceptControl = false;
     instance = token = error = '';
     frame = null;
     jpeg = null;
@@ -70,7 +71,7 @@ class BrowserLiveController extends ChangeNotifier {
     }
     if (response['controlToken'] case final String value
         when value.isNotEmpty) {
-      if (watching) token = value;
+      if (watching && _acceptControl) token = value;
     }
     final pending = _pending.remove(response['id']);
     if (pending != null) {
@@ -124,6 +125,7 @@ class BrowserLiveController extends ChangeNotifier {
       });
     }
     watching = false;
+    _acceptControl = false;
     token = '';
     jpeg = null;
     frame = null;
@@ -140,8 +142,13 @@ class BrowserLiveController extends ChangeNotifier {
     });
   }
 
-  Future<void> takeControl() => command('browser_control_acquire');
+  Future<void> takeControl() {
+    _acceptControl = true;
+    return command('browser_control_acquire');
+  }
+
   Future<void> release() async {
+    _acceptControl = false;
     token = '';
     await command('browser_control_release');
   }
@@ -173,8 +180,17 @@ Offset? browserViewportPoint(Offset imagePoint, Map<String, dynamic> frame) {
 }
 
 class BrowserLiveView extends StatefulWidget {
-  const BrowserLiveView({super.key, required this.controller});
+  const BrowserLiveView({
+    super.key,
+    required this.controller,
+    this.compact = false,
+    this.onMinimize,
+    this.onClose,
+    this.onExpand,
+  });
   final BrowserLiveController controller;
+  final bool compact;
+  final VoidCallback? onMinimize, onClose, onExpand;
   @override
   State<BrowserLiveView> createState() => _BrowserLiveViewState();
 }
@@ -209,12 +225,21 @@ class _BrowserLiveViewState extends State<BrowserLiveView>
       try {
         await attempt(() async {
           await live.start();
-          if (live.canControl) await live.takeControl();
+          if (!widget.compact && live.canControl) await live.takeControl();
         });
       } finally {
         renewing = false;
       }
     });
+  }
+
+  @override
+  void didUpdateWidget(BrowserLiveView oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.compact && !oldWidget.compact) {
+      text.clear();
+      unawaited(attempt(live.release));
+    }
   }
 
   void changed() {
@@ -349,11 +374,78 @@ class _BrowserLiveViewState extends State<BrowserLiveView>
 
   @override
   Widget build(BuildContext context) {
+    if (widget.compact) {
+      return Material(
+        elevation: 8,
+        borderRadius: BorderRadius.circular(12),
+        clipBehavior: Clip.antiAlias,
+        child: Column(
+          children: [
+            SizedBox(
+              height: 36,
+              child: Row(
+                children: [
+                  const SizedBox(width: 8),
+                  const Expanded(
+                    child: Text(
+                      'Browser · Live',
+                      style: TextStyle(fontSize: 12),
+                    ),
+                  ),
+                  IconButton(
+                    padding: EdgeInsets.zero,
+                    tooltip: 'Expand browser',
+                    onPressed: widget.onExpand,
+                    icon: const Icon(Icons.open_in_full, size: 18),
+                  ),
+                  IconButton(
+                    padding: EdgeInsets.zero,
+                    tooltip: 'Close browser preview',
+                    onPressed: widget.onClose,
+                    icon: const Icon(Icons.close, size: 18),
+                  ),
+                ],
+              ),
+            ),
+            Expanded(
+              child: GestureDetector(
+                behavior: HitTestBehavior.opaque,
+                onTap: widget.onExpand,
+                child: SizedBox.expand(
+                  child: image == null
+                      ? const Center(
+                          child: Text(
+                            'Waiting for frame…',
+                            style: TextStyle(fontSize: 12),
+                          ),
+                        )
+                      : RawImage(image: image, fit: BoxFit.contain),
+                ),
+              ),
+            ),
+          ],
+        ),
+      );
+    }
     final enabled = live.canControl && !inputBusy && displayedFrame != null;
     return Scaffold(
       appBar: AppBar(
+        automaticallyImplyLeading: widget.onMinimize == null,
+        leading: widget.onMinimize == null
+            ? null
+            : IconButton(
+                tooltip: 'Minimize browser',
+                onPressed: widget.onMinimize,
+                icon: const Icon(Icons.picture_in_picture_alt),
+              ),
         title: const Text('Browser Live View'),
         actions: [
+          if (widget.onClose != null)
+            IconButton(
+              tooltip: 'Close browser view',
+              onPressed: widget.onClose,
+              icon: const Icon(Icons.close),
+            ),
           TextButton(
             onPressed: live.open
                 ? () =>
