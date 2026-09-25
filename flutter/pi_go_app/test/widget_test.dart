@@ -1104,6 +1104,67 @@ done""",
     expect(connection.messages, isEmpty);
   });
 
+  test('keeps Claude commentary, MCP tool, and final answer in order', () {
+    final connection = AgentConnection();
+    void emit(Map<String, dynamic> event) =>
+        connection.receive(jsonEncode({'event': event}));
+    emit({
+      'type': 'message_start',
+      'message': {'role': 'assistant', 'content': []},
+    });
+    emit({
+      'type': 'message_update',
+      'message': {
+        'role': 'assistant',
+        'content': [
+          {'type': 'text', 'text': 'I will inspect it.'},
+        ],
+      },
+    });
+    emit({
+      'type': 'tool_execution_start',
+      'toolCallId': 'mcp-1',
+      'toolName': 'read',
+      'arguments': {'path': 'README.md'},
+    });
+    emit({
+      'type': 'tool_execution_end',
+      'toolCallId': 'mcp-1',
+      'toolName': 'read',
+      'result': {
+        'content': [
+          {'type': 'text', 'text': 'file contents'},
+        ],
+      },
+    });
+    emit({
+      'type': 'message_update',
+      'message': {
+        'role': 'assistant',
+        'content': [
+          {'type': 'text', 'text': 'I will inspect it.The answer is here.'},
+        ],
+      },
+    });
+    emit({
+      'type': 'message_end',
+      'message': {
+        'role': 'assistant',
+        'content': [
+          {'type': 'text', 'text': 'I will inspect it.The answer is here.'},
+        ],
+      },
+    });
+    expect(connection.messages.map((item) => item.role).toList(), [
+      'Assistant',
+      'Tool · read · README.md',
+      'Assistant',
+    ]);
+    expect(connection.messages.first.text, 'I will inspect it.');
+    expect(connection.messages[1].toolOutput, 'file contents');
+    expect(connection.messages.last.text, 'The answer is here.');
+  });
+
   testWidgets('manages two independent connection slots', (tester) async {
     await tester.binding.setSurfaceSize(const Size(1024, 768));
     addTearDown(() => tester.binding.setSurfaceSize(null));
@@ -1220,6 +1281,76 @@ done""",
       );
     },
   );
+
+  test('shows install and login instructions from the agent server', () {
+    final connection = AgentConnection();
+    connection.receive(
+      jsonEncode({
+        'command': 'get_agy_setup',
+        'agyInstalled': false,
+        'agyReady': false,
+        'agySetupCommand': 'Install agy on the agent server',
+        'agySetupMessage': 'agy is not installed',
+      }),
+    );
+    expect(connection.agyInstalled, isFalse);
+    expect(connection.agyReady, isFalse);
+    expect(connection.agySetupCommand, contains('Install agy'));
+    connection.receive(
+      jsonEncode({
+        'command': 'get_agy_setup',
+        'agyInstalled': true,
+        'agyReady': false,
+        'agySetupCommand': "HOME='/home/test/.pi-go/agy' agy",
+        'agySetupMessage': 'Antigravity sign-in required',
+      }),
+    );
+    expect(connection.agyInstalled, isTrue);
+    expect(connection.agyReady, isFalse);
+    expect(connection.agySetupCommand, contains('.pi-go/agy'));
+    connection.receive(
+      jsonEncode({
+        'command': 'get_agy_setup',
+        'agyInstalled': true,
+        'agyReady': true,
+        'agySetupMessage': 'Gemini models are available.',
+      }),
+    );
+    expect(connection.agyReady, isTrue);
+  });
+
+  test('tracks Claude install, login, and ready state', () {
+    final connection = AgentConnection();
+    connection.receive(
+      jsonEncode({
+        'command': 'get_claude_setup',
+        'claudeInstalled': false,
+        'claudeReady': false,
+        'claudeSetupCommand': 'Install Claude Code on the agent server',
+      }),
+    );
+    expect(connection.claudeInstalled, isFalse);
+    expect(connection.claudeSetupCommand, contains('Install Claude Code'));
+    connection.receive(
+      jsonEncode({
+        'command': 'get_claude_setup',
+        'claudeInstalled': true,
+        'claudeReady': false,
+        'claudeSetupCommand': 'claude auth login',
+      }),
+    );
+    expect(connection.claudeInstalled, isTrue);
+    expect(connection.claudeReady, isFalse);
+    expect(connection.claudeSetupCommand, 'claude auth login');
+    connection.receive(
+      jsonEncode({
+        'command': 'get_claude_setup',
+        'claudeInstalled': true,
+        'claudeReady': true,
+      }),
+    );
+    expect(connection.claudeReady, isTrue);
+  });
 
   test('tracks pushed active and waiting-input session status in memory', () {
     final connection = AgentConnection();

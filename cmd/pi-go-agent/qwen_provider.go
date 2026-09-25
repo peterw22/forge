@@ -403,20 +403,70 @@ func maxQwenToolIndex(values map[int]*qwenPendingTool) int {
 	return maximum
 }
 
-type providerRouter struct{ codex, api agent.Provider }
+type providerRouter struct{ codex, api, agy, claude agent.Provider }
 
 func (router *providerRouter) Stream(ctx context.Context, request agent.Request) (<-chan agent.ProviderEvent, <-chan error) {
 	provider := router.codex
 	if strings.HasPrefix(request.Model, codexProviderID+"/") {
 		request.Model = strings.TrimPrefix(request.Model, codexProviderID+"/")
+	} else if strings.HasPrefix(request.Model, "agy/") {
+		if router.agy == nil {
+			return closedProviderStream(errors.New("agy provider is not enabled"))
+		}
+		provider = router.agy
+	} else if strings.HasPrefix(request.Model, "claude/") {
+		if router.claude == nil {
+			return closedProviderStream(errors.New("Claude Code is not installed"))
+		}
+		provider = router.claude
 	} else if strings.Contains(request.Model, "/") {
 		provider = router.api
 	}
 	return provider.Stream(ctx, request)
 }
 
+// structuredFor routes output-only requests for CLI models to their direct
+// structured path. Codex and API models return nil and use output tool calls.
+func (router *providerRouter) structuredFor(model string) structuredOutputProvider {
+	var candidate agent.Provider
+	switch {
+	case strings.HasPrefix(model, "claude/"):
+		candidate = router.claude
+	case strings.HasPrefix(model, "agy/"):
+		candidate = router.agy
+	default:
+		return nil
+	}
+	// Direct providers tolerate typed-nil receivers and report the missing CLI.
+	if direct, ok := candidate.(structuredOutputProvider); ok {
+		return direct
+	}
+	return unavailableStructuredOutput(model)
+}
+
+type unavailableStructuredOutput string
+
+func (model unavailableStructuredOutput) CompleteStructured(context.Context, agent.Request) (map[string]any, error) {
+	return nil, fmt.Errorf("provider for classifier model %s is not enabled", string(model))
+}
+
+func closedProviderStream(err error) (<-chan agent.ProviderEvent, <-chan error) {
+	events := make(chan agent.ProviderEvent)
+	close(events)
+	errs := make(chan error, 1)
+	errs <- err
+	close(errs)
+	return events, errs
+}
+
 func (router *providerRouter) CloseSession(id string) {
 	if closer, ok := router.codex.(agent.ProviderSessionCloser); ok {
+		closer.CloseSession(id)
+	}
+	if closer, ok := router.claude.(agent.ProviderSessionCloser); ok {
+		closer.CloseSession(id)
+	}
+	if closer, ok := router.agy.(agent.ProviderSessionCloser); ok {
 		closer.CloseSession(id)
 	}
 	if closer, ok := router.api.(agent.ProviderSessionCloser); ok {

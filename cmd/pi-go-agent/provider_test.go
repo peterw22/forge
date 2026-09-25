@@ -72,6 +72,7 @@ func TestCodexAstraModelPassesThroughExistingRequestInfra(t *testing.T) {
 }
 
 func TestConfiguredModelsIncludeCodexFastVariants(t *testing.T) {
+	t.Setenv("PI_GO_AGY_HOME", t.TempDir())
 	auth := newCodexAuthManagerAt(filepath.Join(t.TempDir(), "auth.json"), defaultCodexAuthEndpoints, http.DefaultClient)
 	models, err := configuredModels(auth)
 	if err != nil {

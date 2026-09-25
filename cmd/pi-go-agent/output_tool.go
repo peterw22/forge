@@ -8,9 +8,25 @@ import (
 	"github.com/peterw22/pi-go/internal/agent"
 )
 
+// structuredOutputProvider answers an output-only request directly. CLI
+// providers run tools internally and cannot surface a tool call, so they return
+// the would-be tool arguments instead. Each implementation appends its own
+// output-mechanism instruction to the system prompt.
+type structuredOutputProvider interface {
+	CompleteStructured(ctx context.Context, request agent.Request) (map[string]any, error)
+}
+
+// structuredOutputRouter selects a direct structured provider for a model, or
+// returns nil when the model uses the streaming output-tool path.
+type structuredOutputRouter interface {
+	structuredFor(model string) structuredOutputProvider
+}
+
 // collectOutputTool consumes an output-only tool call, never executing it or
 // feeding a tool result back to the model. Providers use automatic tool choice;
-// ordinary response text is not a fallback source of structured results.
+// ordinary response text is not a fallback source of structured results on the
+// streaming path. Callers validate the returned arguments identically for every
+// provider.
 func collectOutputTool(ctx context.Context, provider agent.Provider, request agent.Request) (map[string]any, error) {
 	if len(request.Tools) != 1 {
 		return nil, errors.New("structured output requires exactly one tool definition")
@@ -21,6 +37,12 @@ func collectOutputTool(ctx context.Context, provider agent.Provider, request age
 		return nil, err
 	}
 	expected := request.Tools[0].Name
+	if router, ok := provider.(structuredOutputRouter); ok {
+		if direct := router.structuredFor(request.Model); direct != nil {
+			return direct.CompleteStructured(ctx, request)
+		}
+	}
+	request.SystemPrompt += "\n\nCall " + expected + " exactly once with your result in its individual arguments. Do not return the result as ordinary text, JSON text, or Markdown."
 	events, errs := provider.Stream(ctx, request)
 	var arguments map[string]any
 	var called, done bool

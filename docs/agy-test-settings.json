@@ -1,0 +1,1 @@
+{"permissions":{"allow":["mcp(pi-go-agent/*)"],"deny":["read_file(*)","write_file(*)","read_url(*)","execute_url(*)","command(*)","unsandboxed(*)"]}}

@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -454,6 +455,16 @@ func configuredModels(auth *codexAuthManager) ([]modelInfo, error) {
 	for _, config := range configs {
 		for _, id := range config.Models {
 			models = append(models, modelInfo{ID: config.Name + "/" + id, Provider: config.Name, Label: config.Name + " · " + id})
+		}
+	}
+	if workspace, err := os.Getwd(); err == nil {
+		if agyModels, err := readyAgyModels(context.Background(), workspace); err == nil {
+			models = append(models, agyModels...)
+		}
+	}
+	if binary, err := exec.LookPath("claude"); err == nil && binary != "" {
+		for _, id := range []string{"claude-opus-5-5", "claude-sonnet-5", "claude-haiku-4-5-20251001"} {
+			models = append(models, modelInfo{ID: "claude/" + id, Provider: "claude", Label: "Claude Code · " + id})
 		}
 	}
 	return models, nil

@@ -142,6 +142,7 @@ func TestMultipleNamedAPIProvidersPersistAndModelsUseProviderPrefix(t *testing.T
 	if err != nil || len(configs) != 2 {
 		t.Fatalf("configs=%#v err=%v", configs, err)
 	}
+	t.Setenv("PI_GO_AGY_HOME", t.TempDir())
 	models, err := configuredModels(auth)
 	if err != nil {
 		t.Fatal(err)

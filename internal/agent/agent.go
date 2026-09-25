@@ -80,13 +80,22 @@ type ToolResult struct {
 }
 
 type Request struct {
-	Model        string
-	Thinking     string
-	SystemPrompt string
-	Messages     []Message
-	Tools        []Tool
-	SessionID    string
-	ServiceTier  string
+	Model            string
+	Thinking         string
+	SystemPrompt     string
+	Messages         []Message
+	Tools            []Tool
+	SessionID        string
+	ServiceTier      string
+	WorkingDirectory string
+	ToolGuard        ToolGuard
+	YOLO             bool
+	OnToolEvent      func(Event)
+	// SaveProviderConversation persists a successfully completed CLI turn's
+	// opaque conversation ID alongside the local session transcript.
+	SaveProviderConversation func(provider, model, cwd, id string) error
+	// LoadProviderConversation restores only a matching session/model/workspace.
+	LoadProviderConversation func(provider, model, cwd string) (string, error)
 }
 
 type ProviderEventType string
@@ -180,10 +189,13 @@ type Config struct {
 	Tools            []Tool
 	// ParallelTools applies to tool calls in one assistant response. Pi defaults
 	// to parallel scheduling; callers may select false while bringing up tools.
-	ParallelTools bool
-	ToolGuard     ToolGuard
-	AllowApproval bool
-	YOLO          bool
+	ParallelTools            bool
+	ToolGuard                ToolGuard
+	SaveProviderConversation func(provider, model, cwd, id string) error
+	LoadProviderConversation func(provider, model, cwd string) (string, error)
+	OnProviderToolEvent      func(Event)
+	AllowApproval            bool
+	YOLO                     bool
 }
 
 type Agent struct {
@@ -227,6 +239,20 @@ func (a *Agent) Restore(messages []Message, model, thinking string, usage Usage)
 	if thinking != "" {
 		a.config.Thinking = thinking
 	}
+}
+
+func (a *Agent) ConfigureProviderSession(save func(string, string, string, string) error, load func(string, string, string) (string, error), onTool func(Event)) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.config.SaveProviderConversation = save
+	a.config.LoadProviderConversation = load
+	a.config.OnProviderToolEvent = onTool
+}
+
+func (a *Agent) AppendProviderTranscriptMessage(message Message) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.state.Messages = append(a.state.Messages, message)
 }
 
 func (a *Agent) SetSessionID(id string) {
@@ -368,8 +394,13 @@ func (a *Agent) RunContent(ctx context.Context, content []ContentBlock, emit fun
 func (a *Agent) runProvider(ctx context.Context, emit func(Event)) (Message, []ContentBlock, string, Usage, error) {
 	a.mu.RLock()
 	model, thinking, systemPrompt, sessionID, tools := a.config.Model, a.config.Thinking, a.config.SystemPrompt, a.config.SessionID, append([]Tool(nil), a.config.Tools...)
+	yolo := a.config.YOLO
 	a.mu.RUnlock()
-	request := Request{Model: model, Thinking: thinking, SystemPrompt: systemPrompt, Messages: a.Snapshot().Messages, Tools: tools, SessionID: sessionID}
+	request := Request{Model: model, Thinking: thinking, SystemPrompt: systemPrompt, Messages: a.Snapshot().Messages, Tools: tools, SessionID: sessionID, WorkingDirectory: a.config.WorkingDirectory, ToolGuard: a.config.ToolGuard, YOLO: yolo, OnToolEvent: emit, SaveProviderConversation: a.config.SaveProviderConversation, LoadProviderConversation: a.config.LoadProviderConversation}
+	if a.config.OnProviderToolEvent != nil {
+		callback := a.config.OnProviderToolEvent
+		request.OnToolEvent = func(event Event) { callback(event); emit(event) }
+	}
 	events, providerErr := a.config.Provider.Stream(ctx, request)
 	assistant := Message{Role: RoleAssistant, Timestamp: time.Now().UnixMilli()}
 	emit(Event{Type: EventMessageStart, Message: &assistant})

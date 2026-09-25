@@ -123,6 +123,34 @@ type sessionRuntime struct {
 func newSessionRuntime(id string, core *agent.Agent, sessions *session.Controller) *sessionRuntime {
 	core.SetSessionID(id)
 	runtime := &sessionRuntime{id: id, core: core, sessions: sessions, subscribers: make(map[*subscriber]struct{}), browser: &browserSession{}}
+	runtime.core.ConfigureProviderSession(
+		func(provider, model, cwd, conversationID string) error {
+			runtime.mu.Lock()
+			controller := runtime.sessions
+			runtime.mu.Unlock()
+			if controller == nil {
+				return errors.New("session not persisted")
+			}
+			return controller.SetProviderBinding(session.ProviderBinding{Provider: provider, Model: model, CWD: cwd, ConversationID: conversationID})
+		},
+		func(provider, model, cwd string) (string, error) {
+			runtime.mu.Lock()
+			controller := runtime.sessions
+			runtime.mu.Unlock()
+			if controller == nil {
+				return "", nil
+			}
+			binding, err := session.ReadProviderBinding(controller.Path(), provider)
+			if err != nil {
+				return "", err
+			}
+			if binding.ConversationID != "" && (binding.Model != model || binding.CWD != cwd) {
+				return "", errors.New("provider session model or workspace changed")
+			}
+			return binding.ConversationID, nil
+		},
+		func(event agent.Event) { runtime.persistProviderToolEvent(event) },
+	)
 	runtime.browser.live.notify = func(_ browserViewState) {
 		runtime.mu.Lock()
 		defer runtime.mu.Unlock()
@@ -140,6 +168,34 @@ func newDraftSessionRuntime(id, root string, core *agent.Agent) *sessionRuntime 
 	runtime := newSessionRuntime(id, core, nil)
 	runtime.root = root
 	return runtime
+}
+func (runtime *sessionRuntime) persistProviderToolEvent(event agent.Event) {
+	if event.Type != agent.EventToolExecutionStart && event.Type != agent.EventToolExecutionEnd {
+		return
+	}
+	// Persist MCP calls for reload from disk. During a live session the tool
+	// events are published separately; the provider retains conversation state.
+	runtime.mu.Lock()
+	controller := runtime.sessions
+	runtime.mu.Unlock()
+	if controller == nil {
+		return
+	}
+	if event.Type == agent.EventToolExecutionStart {
+		message := agent.Message{Role: agent.RoleAssistant, Timestamp: time.Now().UnixMilli(), Content: []agent.ContentBlock{{Type: "toolCall", ID: event.ToolCallID, Name: event.ToolName, Arguments: event.Arguments}}}
+		if err := controller.Append(message, agent.Usage{}); err != nil {
+			log.Printf("persist CLI tool call: %v", err)
+		} else {
+			runtime.core.AppendProviderTranscriptMessage(message)
+		}
+	} else if event.Result != nil {
+		message := agent.Message{Role: agent.RoleToolResult, ToolCallID: event.ToolCallID, ToolName: event.ToolName, Timestamp: time.Now().UnixMilli(), IsError: event.IsError, Content: event.Result.Content}
+		if err := controller.Append(message, agent.Usage{}); err != nil {
+			log.Printf("persist CLI tool result: %v", err)
+		} else {
+			runtime.core.AppendProviderTranscriptMessage(message)
+		}
+	}
 }
 func (runtime *sessionRuntime) tools(workspace string) []agent.Tool {
 	extras := runtime.browser.tools()
@@ -489,14 +545,37 @@ func (runtime *sessionRuntime) setCWD(value string) error {
 	if err != nil {
 		return err
 	}
+	model, _, _ := runtime.core.Settings()
+	if strings.HasPrefix(model, "agy/") {
+		if err := prepareAgyWorkspace(workspace); err != nil {
+			return err
+		}
+	}
 	runtime.mu.Lock()
 	defer runtime.mu.Unlock()
 	if runtime.active {
 		return errors.New("abort the current turn before changing the working directory")
 	}
+	_, _, currentWorkspace := runtime.core.Settings()
+	if currentWorkspace == workspace {
+		return nil
+	}
 	if runtime.sessions != nil {
 		if err := runtime.sessions.SetCWD(workspace); err != nil {
 			return err
+		}
+	}
+	if runtimeClaudeProvider != nil {
+		runtimeClaudeProvider.CloseSession(runtime.id)
+	}
+	if runtimeAgyProvider != nil {
+		runtimeAgyProvider.CloseSession(runtime.id)
+	}
+	if runtime.sessions != nil {
+		for _, providerName := range []string{"agy", "claude"} {
+			if err := runtime.sessions.SetProviderBinding(session.ProviderBinding{Provider: providerName}); err != nil {
+				return err
+			}
 		}
 	}
 	runtime.browser.close()
@@ -507,14 +586,56 @@ func (runtime *sessionRuntime) setModel(model string) error {
 	if strings.TrimSpace(model) == "" {
 		return errors.New("model must not be empty")
 	}
+	if strings.HasPrefix(model, "agy/") {
+		if runtimeAgyProvider == nil {
+			_, err := agyBinary()
+			return err
+		}
+		_, _, cwd := runtime.core.Settings()
+		if err := prepareAgyWorkspace(cwd); err != nil {
+			return err
+		}
+		if _, err := readyAgyModels(context.Background(), cwd); err != nil {
+			return err
+		}
+	}
+	if strings.HasPrefix(model, "claude/") {
+		if runtimeClaudeProvider == nil {
+			return errors.New("Claude Code is not installed")
+		}
+		if !claudeModelAllowed(strings.TrimPrefix(model, "claude/")) {
+			return errors.New("unsupported Claude model")
+		}
+		_, level, _ := runtime.core.Settings()
+		if !claudeEffortAllowed(level) {
+			return errors.New("Claude thinking effort must be low, medium, high, xhigh, or max; set thinking first")
+		}
+	}
 	runtime.mu.Lock()
 	defer runtime.mu.Unlock()
 	if runtime.active {
 		return errors.New("abort the current turn before changing model")
 	}
+	currentModel, _, _ := runtime.core.Settings()
+	if currentModel == model {
+		return nil
+	}
 	if runtime.sessions != nil {
 		if err := runtime.sessions.SetModel(model); err != nil {
 			return err
+		}
+	}
+	if runtimeClaudeProvider != nil {
+		runtimeClaudeProvider.CloseSession(runtime.id)
+	}
+	if runtimeAgyProvider != nil {
+		runtimeAgyProvider.CloseSession(runtime.id)
+	}
+	if runtime.sessions != nil {
+		for _, providerName := range []string{"agy", "claude"} {
+			if err := runtime.sessions.SetProviderBinding(session.ProviderBinding{Provider: providerName}); err != nil {
+				return err
+			}
 		}
 	}
 	runtime.core.SetModel(model)
@@ -523,6 +644,10 @@ func (runtime *sessionRuntime) setModel(model string) error {
 func (runtime *sessionRuntime) setThinking(level string) error {
 	if !validThinking(level) {
 		return errors.New("invalid thinking level")
+	}
+	model, _, _ := runtime.core.Settings()
+	if strings.HasPrefix(model, "claude/") && !claudeEffortAllowed(level) {
+		return errors.New("Claude thinking effort must be low, medium, high, xhigh, or max (off and minimal are unsupported)")
 	}
 	runtime.mu.Lock()
 	defer runtime.mu.Unlock()
@@ -1050,6 +1175,8 @@ var jsonDecoder = func(input io.Reader) func(*backendCommand) error {
 }
 
 var runtimeAuthManager *codexAuthManager
+var runtimeAgyProvider *agyProvider
+var runtimeClaudeProvider *claudeCLIProvider
 var runtimeClassifierSettings *classifierSettings
 var runtimeClassifierProvider agent.Provider
 
@@ -1308,6 +1435,17 @@ func (client *clientConnection) handle(command backendCommand) error {
 			return err
 		}
 		client.reply(backendResponse{ID: command.ID, Type: "response", Command: command.Type, Success: true, Provider: "api", ProviderConfig: &config, ProviderConfigs: configs})
+	case "get_claude_setup":
+		response := claudeSetupStatus(context.Background())
+		response.ID = command.ID
+		client.reply(response)
+	case "get_agy_setup":
+		_, _, workspace := runtime.core.Settings()
+		ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
+		defer cancel()
+		response := agySetupStatus(ctx, workspace)
+		response.ID = command.ID
+		client.reply(response)
 	case "list_models":
 		if runtimeAuthManager == nil {
 			return errors.New("provider configuration manager is unavailable")

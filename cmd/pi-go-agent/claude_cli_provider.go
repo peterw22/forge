@@ -1,0 +1,303 @@
+package main
+
+import (
+	"bufio"
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"os"
+	"os/exec"
+	"strings"
+	"sync"
+	"sync/atomic"
+
+	"github.com/peterw22/pi-go/internal/agent"
+)
+
+// claudeCLIProvider runs Claude Code with no built-in tools, no inherited MCP
+// servers or settings, and only the authenticated Pi Go MCP server. A tool
+// call and its result finish inside the same Claude turn.
+type claudeCLIProvider struct {
+	binary        string
+	mu            sync.Mutex
+	conversations map[string]agyConversation
+}
+
+func newClaudeCLIProvider(binary string) *claudeCLIProvider {
+	return &claudeCLIProvider{binary: binary, conversations: make(map[string]agyConversation)}
+}
+func (p *claudeCLIProvider) CloseSession(id string) {
+	p.mu.Lock()
+	delete(p.conversations, id)
+	p.mu.Unlock()
+}
+func (p *claudeCLIProvider) Stream(ctx context.Context, req agent.Request) (<-chan agent.ProviderEvent, <-chan error) {
+	events := make(chan agent.ProviderEvent, 32)
+	errs := make(chan error, 1)
+	go func() {
+		defer close(events)
+		defer close(errs)
+		if err := p.stream(ctx, req, events); err != nil {
+			errs <- err
+		}
+	}()
+	return events, errs
+}
+func (p *claudeCLIProvider) stream(ctx context.Context, req agent.Request, events chan<- agent.ProviderEvent) error {
+	if req.SessionID == "" || req.ToolGuard == nil || req.OnToolEvent == nil {
+		return errors.New("Claude MCP turn requires a session, classifier, and tool event observer")
+	}
+	model, ok := strings.CutPrefix(req.Model, "claude/")
+	if !ok || !claudeModelAllowed(model) {
+		return errors.New("unsupported Claude model")
+	}
+	if !claudeEffortAllowed(req.Thinking) {
+		return errors.New("Claude thinking effort must be low, medium, high, xhigh, or max (off and minimal are unsupported)")
+	}
+	if len(req.Messages) == 0 || req.Messages[len(req.Messages)-1].Role != agent.RoleUser {
+		return errors.New("Claude requires a user turn")
+	}
+	if req.WorkingDirectory == "" {
+		return errors.New("Claude requires a working directory")
+	}
+	if info, err := os.Stat(req.WorkingDirectory); err != nil || !info.IsDir() {
+		return errors.New("Claude working directory is invalid")
+	}
+	prompt, err := claudeCLIUserInput(req.Messages[len(req.Messages)-1].Content)
+	if err != nil {
+		return err
+	}
+	var verified atomic.Bool
+	bridge, err := newMCPGuardedTurnBridgeWithYOLO(ctx, req.WorkingDirectory, req.ToolGuard, req.Messages, req.Tools, false, verified.Load, req.YOLO, req.OnToolEvent)
+	if err != nil {
+		return err
+	}
+	defer bridge.Close()
+	executable, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	config, err := json.Marshal(map[string]any{"mcpServers": map[string]any{"pi-go-agent": map[string]any{"command": executable, "args": []string{"--agy-mcp-stdio"}, "env": map[string]string{"PI_GO_AGY_MCP_ADDRESS": bridge.address + "/call", "PI_GO_AGY_MCP_TOKEN": bridge.token}}}})
+	if err != nil {
+		return err
+	}
+	p.mu.Lock()
+	previous := p.conversations[req.SessionID]
+	p.mu.Unlock()
+	conversation := previous.ID
+	if req.LoadProviderConversation != nil {
+		id, err := req.LoadProviderConversation("claude", req.Model, req.WorkingDirectory)
+		if err != nil {
+			return err
+		}
+		conversation = id // persisted binding is authoritative over stale in-memory maps
+	}
+	priorAssistant := false
+	for _, message := range req.Messages[:len(req.Messages)-1] {
+		if message.Role == agent.RoleAssistant {
+			priorAssistant = true
+			break
+		}
+	}
+	if priorAssistant && conversation == "" {
+		return errors.New("Claude conversation ID missing for an existing transcript; start a new session rather than silently dropping context")
+	}
+	args := []string{"--print", "--model", model, "--effort", req.Thinking, "--output-format", "stream-json", "--verbose", "--include-partial-messages", "--tools", "", "--restricted", "--strict-mcp-config", "--mcp-config", string(config), "--setting-sources", "", "--permission-mode", "dontAsk", "--allowedTools", "mcp__pi-go-agent__*", "--append-system-prompt", mcpOnlyToolInstruction, "--disable-slash-commands"}
+	if conversation != "" && (previous.Model == "" || previous.Model == req.Model) {
+		args = append(args, "--resume", conversation)
+	}
+	args = append(args, "--input-format", "stream-json")
+	cmd := exec.CommandContext(ctx, p.binary, args...)
+	cmd.Stdin = strings.NewReader(prompt)
+	cmd.Dir = req.WorkingDirectory
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return err
+	}
+	var stderr strings.Builder
+	cmd.Stderr = &limitedWriter{w: &stderr, remaining: 4096}
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("start Claude: %w", err)
+	}
+	var completedID string
+	parseErr := parseClaudeCLIStream(ctx, stdout, events, func(id string) { completedID = id }, verified.Store)
+	if parseErr != nil {
+		_ = cmd.Process.Kill()
+	}
+	waitErr := cmd.Wait()
+	if parseErr != nil {
+		p.CloseSession(req.SessionID)
+		return fmt.Errorf("Claude stream: %w; stderr: %s; exit: %v", parseErr, stderr.String(), waitErr)
+	}
+	if err := ctx.Err(); err != nil {
+		p.CloseSession(req.SessionID)
+		return err
+	}
+	if waitErr != nil {
+		p.CloseSession(req.SessionID)
+		return fmt.Errorf("Claude exited: %w: %s", waitErr, stderr.String())
+	}
+	if req.SaveProviderConversation != nil {
+		if err := req.SaveProviderConversation("claude", req.Model, req.WorkingDirectory, completedID); err != nil {
+			p.CloseSession(req.SessionID)
+			return err
+		}
+	}
+	p.mu.Lock()
+	p.conversations[req.SessionID] = agyConversation{ID: completedID, Model: req.Model}
+	p.mu.Unlock()
+	return nil
+}
+func claudeEffortAllowed(level string) bool {
+	switch level {
+	case "low", "medium", "high", "xhigh", "max":
+		return true
+	}
+	return false
+}
+
+func claudeModelAllowed(model string) bool {
+	switch model {
+	case "claude-opus-5-5", "claude-sonnet-5", "claude-haiku-4-5-20251001":
+		return true
+	}
+	return false
+}
+
+func parseClaudeCLIStream(ctx context.Context, reader io.Reader, events chan<- agent.ProviderEvent, save func(string), onVerified ...func(bool)) error {
+	scanner := bufio.NewScanner(reader)
+	scanner.Buffer(make([]byte, 64*1024), 1<<20)
+	var session string
+	var text strings.Builder
+	var finalSegment strings.Builder
+	// Claude emits several assistant messages around MCP calls in one turn.
+	// Keep their display boundaries without changing the raw result comparison.
+	pendingBoundary := false
+	emitText := func(delta string) {
+		if pendingBoundary && text.Len() > 0 {
+			separator := "\n\n"
+			if strings.HasSuffix(text.String(), "\n\n") {
+				separator = ""
+			} else if strings.HasSuffix(text.String(), "\n") {
+				separator = "\n"
+			}
+			delta = separator + delta
+		}
+		pendingBoundary = false
+		text.WriteString(delta)
+		events <- agent.ProviderEvent{Type: agent.ProviderTextDelta, Delta: delta}
+	}
+	initialized, done := false, false
+	for scanner.Scan() {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if done {
+			return errors.New("Claude emitted events after result")
+		}
+		var msg struct {
+			Type       string   `json:"type"`
+			Subtype    string   `json:"subtype"`
+			SessionID  string   `json:"session_id"`
+			Tools      []string `json:"tools"`
+			MCPServers []struct {
+				Name   string `json:"name"`
+				Status string `json:"status"`
+			} `json:"mcp_servers"`
+			Event struct {
+				Type         string `json:"type"`
+				ContentBlock struct {
+					Type string `json:"type"`
+				} `json:"content_block"`
+				Delta struct {
+					Type     string `json:"type"`
+					Text     string `json:"text"`
+					Thinking string `json:"thinking"`
+				} `json:"delta"`
+			} `json:"event"`
+			Result            string            `json:"result"`
+			IsError           bool              `json:"is_error"`
+			PermissionDenials []json.RawMessage `json:"permission_denials"`
+			Usage             struct {
+				Input      int `json:"input_tokens"`
+				Output     int `json:"output_tokens"`
+				CacheRead  int `json:"cache_read_input_tokens"`
+				CacheWrite int `json:"cache_creation_input_tokens"`
+			} `json:"usage"`
+		}
+		if err := json.Unmarshal(scanner.Bytes(), &msg); err != nil {
+			return fmt.Errorf("decode Claude event: %w", err)
+		}
+		switch msg.Type {
+		case "system":
+			if msg.Subtype == "init" {
+				if initialized || msg.SessionID == "" || len(msg.Tools) != 4 || len(msg.MCPServers) != 1 || msg.MCPServers[0].Name != "pi-go-agent" || msg.MCPServers[0].Status != "connected" {
+					return errors.New("Claude MCP-only tool boundary was not established")
+				}
+				expected := map[string]bool{"mcp__pi-go-agent__read": true, "mcp__pi-go-agent__write": true, "mcp__pi-go-agent__replace": true, "mcp__pi-go-agent__bash": true}
+				for _, name := range msg.Tools {
+					if !expected[name] {
+						return errors.New("Claude exposed unexpected tool: " + name)
+					}
+					delete(expected, name)
+				}
+				if len(expected) != 0 {
+					return errors.New("Claude did not expose the expected MCP tools")
+				}
+				initialized = true
+				session = msg.SessionID
+				if len(onVerified) > 0 && onVerified[0] != nil {
+					onVerified[0](true)
+				}
+			} else if msg.Subtype == "permission_denied" {
+				return errors.New("Claude denied an MCP tool call")
+			}
+		case "stream_event":
+			if !initialized {
+				return errors.New("Claude streamed before tool boundary verification")
+			}
+			if msg.Event.Type == "message_start" || (msg.Event.Type == "content_block_start" && msg.Event.ContentBlock.Type == "tool_use") {
+				finalSegment.Reset()
+				pendingBoundary = true
+			}
+			if msg.Event.Type == "content_block_delta" && msg.Event.Delta.Type == "thinking_delta" && msg.Event.Delta.Thinking != "" {
+				events <- agent.ProviderEvent{Type: agent.ProviderThinkingDelta, Delta: msg.Event.Delta.Thinking}
+			}
+			if msg.Event.Type == "content_block_delta" && msg.Event.Delta.Type == "text_delta" && msg.Event.Delta.Text != "" {
+				finalSegment.WriteString(msg.Event.Delta.Text)
+				emitText(msg.Event.Delta.Text)
+			}
+		case "result":
+			if !initialized || msg.SessionID != session || msg.IsError || msg.Subtype != "success" || len(msg.PermissionDenials) > 0 {
+				return errors.New("Claude turn failed or permission was denied")
+			}
+			// Claude's result contains only the final answer, not commentary
+			// streamed before an MCP tool. Compare just the post-tool segment.
+			if finalSegment.Len() > 0 && !strings.HasPrefix(msg.Result, finalSegment.String()) {
+				return errors.New("Claude result differs from final streamed text")
+			}
+			if finalSegment.Len() == 0 && msg.Result == "" && text.Len() == 0 {
+				return errors.New("Claude returned no response")
+			}
+			if suffix := strings.TrimPrefix(msg.Result, finalSegment.String()); suffix != "" {
+				emitText(suffix)
+			}
+			done = true
+			save(session)
+			u := msg.Usage
+			events <- agent.ProviderEvent{Type: agent.ProviderDone, StopReason: "stop", Usage: agent.Usage{Input: u.Input, Output: u.Output, CacheRead: u.CacheRead, CacheWrite: u.CacheWrite, TotalTokens: u.Input + u.Output + u.CacheRead + u.CacheWrite}}
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return err
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if !done {
+		return errors.New("Claude ended without a result")
+	}
+	return nil
+}

@@ -291,6 +291,14 @@ class AgentConnection extends ChangeNotifier {
   bool authLoginPending = false;
   String authUserCode = '';
   String authVerificationURI = '';
+  bool claudeInstalled = false;
+  bool claudeReady = false;
+  String claudeSetupCommand = '';
+  String claudeSetupMessage = '';
+  bool agyInstalled = false;
+  bool agyReady = false;
+  String agySetupCommand = '';
+  String agySetupMessage = '';
   List<APIProviderConfig> apiProviders = [];
   List<ProviderModel> availableModels = const [
     ProviderModel('gpt-6-sol', 'openai-codex', 'OpenAI Codex · gpt-6-sol'),
@@ -326,6 +334,8 @@ class AgentConnection extends ChangeNotifier {
   void Function(AgentConnection connection)? onHistoryPrepended;
   void Function(AgentConnection connection)? onDisconnected;
   int? _activeAssistantIndex;
+  String _assistantTextBeforeTool = '';
+  String _latestAssistantText = '';
   bool _protocolReady = false;
   String? _sessionToRestore;
   ClientSecureSession? _secureSession;
@@ -630,6 +640,8 @@ class AgentConnection extends ChangeNotifier {
       'type': 'get_provider_config',
       'provider': 'api',
     });
+    send({'id': 'flutter-claude-setup', 'type': 'get_claude_setup'});
+    send({'id': 'flutter-agy-setup', 'type': 'get_agy_setup'});
     send({'id': 'flutter-models', 'type': 'list_models'});
     send({'id': 'flutter-classifier-config', 'type': 'get_classifier_config'});
   }
@@ -954,6 +966,18 @@ class AgentConnection extends ChangeNotifier {
         });
         apiProviders = [parsed];
       }
+      if (response['command'] == 'get_claude_setup') {
+        claudeInstalled = response['claudeInstalled'] == true;
+        claudeReady = response['claudeReady'] == true;
+        claudeSetupCommand = '${response['claudeSetupCommand'] ?? ''}';
+        claudeSetupMessage = '${response['claudeSetupMessage'] ?? ''}';
+      }
+      if (response['command'] == 'get_agy_setup') {
+        agyInstalled = response['agyInstalled'] == true;
+        agyReady = response['agyReady'] == true;
+        agySetupCommand = '${response['agySetupCommand'] ?? ''}';
+        agySetupMessage = '${response['agySetupMessage'] ?? ''}';
+      }
       if (response['models'] case final List values) {
         final parsed = <ProviderModel>[];
         for (final value in values.whereType<Map<String, dynamic>>()) {
@@ -1216,6 +1240,8 @@ class AgentConnection extends ChangeNotifier {
   void _restore(Map<String, dynamic> state) {
     messages.clear();
     _activeAssistantIndex = null;
+    _assistantTextBeforeTool = '';
+    _latestAssistantText = '';
     streaming = (state['Streaming'] ?? state['streaming'] ?? false) == true;
     yolo = (state['YOLO'] ?? state['yolo'] ?? false) == true;
     final stored = state['Messages'] ?? state['messages'] ?? const [];
@@ -1282,6 +1308,8 @@ class AgentConnection extends ChangeNotifier {
           );
         } else if (role == 'assistant') {
           _activeAssistantIndex = null;
+          _assistantTextBeforeTool = '';
+          _latestAssistantText = '';
         }
       case 'message_update':
         final message = event['message'];
@@ -1293,10 +1321,17 @@ class AgentConnection extends ChangeNotifier {
         if (message is Map<String, dynamic> && message['role'] == 'assistant') {
           _replaceLastAssistant(message['content'], complete: true);
           _activeAssistantIndex = null;
+          _assistantTextBeforeTool = '';
+          _latestAssistantText = '';
           final usage = event['usage'];
           if (usage is Map<String, dynamic>) _setUsage(usage);
         }
       case 'tool_execution_start':
+        // An MCP tool can run between two text blocks of one provider turn.
+        // Finish the pre-tool assistant item so later answer text is placed
+        // after this tool, rather than rewriting the earlier commentary.
+        _assistantTextBeforeTool = _latestAssistantText;
+        _activeAssistantIndex = null;
         final item = TranscriptItem(
           'Tool · ${_toolLabel('${event['toolName'] ?? ''}', event['arguments'])}',
           _toolMarkdown('${event['toolName'] ?? ''}', event['arguments'], ''),
@@ -1398,7 +1433,13 @@ class AgentConnection extends ChangeNotifier {
   }
 
   void _replaceLastAssistant(dynamic content, {bool complete = false}) {
-    final text = _contentText(content);
+    final fullText = _contentText(content);
+    _latestAssistantText = fullText;
+    final text =
+        _assistantTextBeforeTool.isNotEmpty &&
+            fullText.startsWith(_assistantTextBeforeTool)
+        ? fullText.substring(_assistantTextBeforeTool.length)
+        : fullText;
     final thinking = _contentThinking(content);
     if (text.isEmpty && thinking.isEmpty) return;
 
@@ -3562,6 +3603,46 @@ class _AgentPageState extends State<AgentPage> with WidgetsBindingObserver {
                             ),
                     ),
                   ),
+                  Card(
+                    child: ListTile(
+                      leading: const Icon(Icons.auto_awesome_outlined),
+                      title: const Text('Antigravity · Gemini'),
+                      subtitle: Text(
+                        agent.agyReady
+                            ? 'Ready · Gemini models are available'
+                            : agent.agyInstalled
+                            ? 'Sign in on the agent server to use Gemini'
+                            : 'Install agy on the agent server to use Gemini',
+                      ),
+                      trailing: TextButton(
+                        onPressed: () {
+                          Navigator.pop(dialogContext);
+                          _showAgySetup();
+                        },
+                        child: Text(agent.agyReady ? 'Details' : 'Set up'),
+                      ),
+                    ),
+                  ),
+                  Card(
+                    child: ListTile(
+                      leading: const Icon(Icons.smart_toy_outlined),
+                      title: const Text('Claude Code'),
+                      subtitle: Text(
+                        agent.claudeReady
+                            ? 'Ready · Claude models are available'
+                            : agent.claudeInstalled
+                            ? 'Sign in on the agent server to use Claude'
+                            : 'Install Claude Code on the agent server',
+                      ),
+                      trailing: TextButton(
+                        onPressed: () {
+                          Navigator.pop(dialogContext);
+                          _showClaudeSetup();
+                        },
+                        child: Text(agent.claudeReady ? 'Details' : 'Set up'),
+                      ),
+                    ),
+                  ),
                   for (final config in agent.apiProviders)
                     Card(
                       child: ListTile(
@@ -3598,6 +3679,106 @@ class _AgentPageState extends State<AgentPage> with WidgetsBindingObserver {
             ),
           ),
           actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext),
+              child: const Text('Close'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Future<void> _showClaudeSetup() async {
+    if (!agent.connected) return;
+    agent.refreshProviderConfiguration();
+    await showDialog<void>(
+      context: context,
+      builder: (dialogContext) => ListenableBuilder(
+        listenable: agent,
+        builder: (context, _) => AlertDialog(
+          title: const Text('Set up Claude Code'),
+          content: SizedBox(
+            width: 560,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  agent.claudeSetupMessage.isEmpty
+                      ? 'Checking Claude Code on the agent server…'
+                      : agent.claudeSetupMessage,
+                ),
+                if (!agent.claudeReady) ...[
+                  const SizedBox(height: 14),
+                  const Text(
+                    'Run this command in a terminal on the agent server:',
+                  ),
+                  const SizedBox(height: 8),
+                  SelectableText(
+                    agent.claudeSetupCommand.isEmpty
+                        ? 'Checking setup instructions…'
+                        : agent.claudeSetupCommand,
+                  ),
+                ],
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: agent.refreshProviderConfiguration,
+              child: const Text('Refresh'),
+            ),
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext),
+              child: const Text('Close'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Future<void> _showAgySetup() async {
+    if (!agent.connected) return;
+    agent.refreshProviderConfiguration();
+    await showDialog<void>(
+      context: context,
+      builder: (dialogContext) => ListenableBuilder(
+        listenable: agent,
+        builder: (context, _) => AlertDialog(
+          title: const Text('Set up Antigravity · Gemini'),
+          content: SizedBox(
+            width: 560,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  agent.agySetupMessage.isEmpty
+                      ? 'Checking agy on the agent server…'
+                      : agent.agySetupMessage,
+                ),
+                if (!agent.agyReady) ...[
+                  const SizedBox(height: 14),
+                  const Text(
+                    'Run this command in a terminal on the agent server:',
+                  ),
+                  const SizedBox(height: 8),
+                  SelectableText(
+                    agent.agySetupCommand.isEmpty
+                        ? 'Checking setup instructions…'
+                        : agent.agySetupCommand,
+                  ),
+                ],
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: agent.refreshProviderConfiguration,
+              child: const Text('Refresh'),
+            ),
             TextButton(
               onPressed: () => Navigator.pop(dialogContext),
               child: const Text('Close'),

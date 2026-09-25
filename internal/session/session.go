@@ -47,6 +47,11 @@ type Controller struct {
 }
 
 func NewController(cwd string, store *Store) *Controller { return &Controller{cwd: cwd, store: store} }
+func (controller *Controller) Path() string {
+	controller.mu.Lock()
+	defer controller.mu.Unlock()
+	return controller.store.Path()
+}
 func (controller *Controller) Append(message agent.Message, usage agent.Usage) error {
 	controller.mu.Lock()
 	defer controller.mu.Unlock()

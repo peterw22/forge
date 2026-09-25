@@ -1,0 +1,31 @@
+# Claude Code (`claude -p`) provider
+
+Install and sign in to Claude Code on the machine running `pi-go-agent`. When `claude` is on PATH, Forge's dynamic model picker offers the concrete IDs `claude/claude-opus-5-5`, `claude/claude-sonnet-5`, and `claude/claude-haiku-4-5-20251001` (verified with Claude Code 2.1.282). Forge's Providers screen includes a Claude Code card with install/sign-in guidance (`claude auth login`). These IDs select pinned model versions rather than floating aliases. An absent CLI does not affect Codex, API, or agy providers. The session-specific YOLO switch skips only the MCP safety classifier for Claude turns. The authenticated bridge, strict Claude MCP-only inventory, and native-tool disabling remain enforced. Toggling YOLO while a turn is active is rejected.
+
+Each turn launches Claude with `--print --output-format stream-json --verbose --include-partial-messages --tools '' --restricted --strict-mcp-config --setting-sources '' --permission-mode dontAsk --allowedTools mcp__pi-go-agent__* --append-system-prompt <MCP-only guidance> --disable-slash-commands`. The sole MCP server is an invocation-local configuration of the same pi-go-agent binary's stdio MCP child. The guidance asks Claude to use only Pi Go MCP tools; actual enforcement comes from disabled native tools and the guarded bridge, not prompt text. The authenticated localhost turn bridge exposes `read`, `write`, `replace`, and `bash`, executes through the existing classifier, and sends tool start/end updates through the standard backend event protocol. Rejected classifications remain denied; the Claude bridge does not yet relay interactive approvals. Claude Code's own built-in tools and inherited MCP servers are disabled; the adapter validates the `init` event's exact tool inventory before forwarding streaming text. The user can abort a turn; there is no automatic turn deadline.
+
+Claude thinking levels `low`, `medium`, `high`, `xhigh`, and `max` are forwarded to `claude --effort`. Selecting Claude while Pi Go is set to `off` or `minimal`, or selecting either level during a Claude session, returns an error. If Claude emits non-empty `thinking_delta.thinking` text, the adapter forwards it to Forge's existing Thinking panel. In Claude Code 2.1.282, a local Opus max-effort probe emitted empty thinking strings and token estimates, not a readable thinking summary; the bridge does not fabricate one.
+
+Claude `stream-json` has an ordering nuance: commentary text can precede an MCP call while the `result` field contains only the final answer. The adapter validates the post-tool text segment against that result, and Forge ends the commentary item at tool start so the final answer appears after the tool panel. This is tested with synthetic and real commentary–MCP read–answer turns.
+
+Resumed turns use Claude's UUID with `--resume`, never `--continue`. Pi Go stores that UUID in each session's append-only `.pi-go/sessions/<session-id>.jsonl` alongside the local user/assistant transcript and MCP tool calls/results. Switching sessions or restarting the agent restores only the matching session/model/workspace binding; missing UUIDs with existing assistant history fail closed rather than silently starting a new conversation. Changing model or workspace invalidates the binding. Text and image prompts are supported. The latest user message is sent on stdin with `--input-format stream-json`, preserving ordered text and base64 image content blocks (PNG, JPEG, GIF, WebP), including image-only prompts. Image payloads are never placed in command-line arguments. Other attachment types, including audio and video, are rejected. Browser and cron tools are not exposed through this MCP child.
+
+Verified locally with Claude Code 2.1.282 and `claude/claude-sonnet-5`: streaming answer, MCP read of a disposable sentinel, classifier-approved harmless MCP Bash, native-tool-disabled init inventory, and CLI resume. The separately running production agent was not restarted during these checks.
+
+## Claude as classifier and summarizer
+
+The safety classifier and turn summarizer share the classifier model setting. It may be a `claude/…` model, including the same model as the session. Each classification or summary is a separate one-shot `claude --print --output-format stream-json --verbose --json-schema <output schema> --system-prompt <classifier prompt> --tools '' --restricted --strict-mcp-config --mcp-config '{"mcpServers":{}}' --setting-sources '' --permission-mode dontAsk --no-session-persistence --disable-slash-commands` run.
+
+- The payload is sent on stdin, not argv, so it does not appear in the process list.
+- The run uses the fixed, private, empty directory `~/.pi-go/classifier-workdir` (under `PI_GO_CONFIG_DIR` if set), never the workspace. Workspace `CLAUDE.md` files therefore cannot influence the gate.
+- The adapter requires an `init` event with no MCP servers and no tools other than `StructuredOutput`. It reads the result's `structured_output`.
+- Those arguments get the same field validation as the OpenAI output-tool path. Any failure denies the operation or uses the fallback summary.
+
+## Compaction
+
+`/compact [instructions]` on a Claude session forwards to Claude Code's native compaction of the bound conversation. Summarizing Pi Go's local transcript would not shrink the context Claude resumes. Pi Go runs `claude --print --resume <id> --tools '' --restricted --strict-mcp-config --mcp-config '{"mcpServers":{}}' --setting-sources '' --permission-mode dontAsk "/compact [instructions]"` in the session's workspace. Slash commands stay enabled for this one invocation.
+
+- Claude keeps the same session ID, so later turns resume the compacted conversation.
+- The adapter requires a `manual` `compact_boundary` event on that session, the continuation summary after it, a successful result, and no tools or MCP servers. Any mismatch fails the compaction.
+- Pi Go records Claude's summary as its compaction checkpoint, with the before/after token counts from `compact_metadata`. The session's JSONL history is kept.
+- A session with no bound Claude conversation yet reports that there is nothing to compact. Verified with Claude Code 2.1.282: 6,900 → 700 tokens in about 11 s, with context kept across the resume.

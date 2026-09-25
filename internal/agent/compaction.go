@@ -102,8 +102,25 @@ type CompactionResult struct {
 	Timestamp            int64     `json:"timestamp"`
 }
 
+// ProviderCompaction is the result of a provider's native compaction.
+type ProviderCompaction struct {
+	Summary      string
+	TokensBefore int
+	TokensAfter  int
+	Usage        Usage
+}
+
+// ProviderCompactor is implemented by providers whose model context lives in
+// an external CLI conversation, where summarizing Pi Go's local transcript
+// would not shrink what the model sees. handled=false selects local
+// summarization for models the provider does not compact natively.
+type ProviderCompactor interface {
+	CompactConversation(ctx context.Context, request Request, customInstructions string) (result ProviderCompaction, handled bool, err error)
+}
+
 // Compact summarizes older context using Pi's checkpoint prompt and keeps about
-// 20k recent tokens. persist runs before the in-memory checkpoint is committed.
+// 20k recent tokens, or forwards to the provider's native compaction.
+// persist runs before the in-memory checkpoint is committed.
 func (a *Agent) Compact(ctx context.Context, customInstructions string, persist func(CompactionResult) error) (CompactionResult, error) {
 	a.mu.Lock()
 	if a.state.Streaming {
@@ -113,8 +130,19 @@ func (a *Agent) Compact(ctx context.Context, customInstructions string, persist 
 	a.state.Streaming = true
 	messages := append([]Message(nil), a.state.Messages...)
 	model, thinking, provider := a.config.Model, a.config.Thinking, a.config.Provider
+	request := Request{Model: model, Thinking: thinking, Messages: messages, SessionID: a.config.SessionID, WorkingDirectory: a.config.WorkingDirectory, SaveProviderConversation: a.config.SaveProviderConversation, LoadProviderConversation: a.config.LoadProviderConversation}
 	a.mu.Unlock()
 	defer func() { a.mu.Lock(); a.state.Streaming = false; a.mu.Unlock() }()
+
+	if compactor, ok := provider.(ProviderCompactor); ok {
+		native, handled, err := compactor.CompactConversation(ctx, request, customInstructions)
+		if err != nil {
+			return CompactionResult{}, err
+		}
+		if handled {
+			return a.commitCompaction(native.Summary, nil, native.TokensBefore, native.TokensAfter, native.Usage, persist)
+		}
+	}
 
 	firstKept, tokensBefore := compactionCutPoint(messages, compactionKeepRecentTokens)
 	if firstKept <= 0 {
@@ -144,7 +172,7 @@ func (a *Agent) Compact(ctx context.Context, customInstructions string, persist 
 	}
 	prompt += basePrompt
 
-	request := Request{Model: model, Thinking: thinking, SystemPrompt: summarizationSystemPrompt, Messages: []Message{{Role: RoleUser, Content: []ContentBlock{{Type: "text", Text: prompt}}, Timestamp: time.Now().UnixMilli()}}}
+	request = Request{Model: model, Thinking: thinking, SystemPrompt: summarizationSystemPrompt, Messages: []Message{{Role: RoleUser, Content: []ContentBlock{{Type: "text", Text: prompt}}, Timestamp: time.Now().UnixMilli()}}}
 	events, errs := provider.Stream(ctx, request)
 	var summary strings.Builder
 	var usage Usage
@@ -183,9 +211,18 @@ func (a *Agent) Compact(ctx context.Context, customInstructions string, persist 
 		return CompactionResult{}, errors.New("summarization ended without a summary")
 	}
 	text := strings.TrimSpace(summary.String()) + trackedFiles(toSummarize)
+	return a.commitCompaction(text, retained, tokensBefore, -1, usage, persist)
+}
+
+// commitCompaction persists and applies a checkpoint. tokensAfter < 0 means it
+// is estimated from the new active context.
+func (a *Agent) commitCompaction(text string, retained []Message, tokensBefore, tokensAfter int, usage Usage, persist func(CompactionResult) error) (CompactionResult, error) {
 	checkpoint := Message{Role: RoleCompactionSummary, Content: []ContentBlock{{Type: "text", Text: text}}, Timestamp: time.Now().UnixMilli()}
 	active := append([]Message{checkpoint}, retained...)
-	result := CompactionResult{Summary: text, RetainedTail: retained, TokensBefore: tokensBefore, EstimatedTokensAfter: estimateMessages(active), Usage: usage, Timestamp: time.Now().UnixMilli()}
+	if tokensAfter < 0 {
+		tokensAfter = estimateMessages(active)
+	}
+	result := CompactionResult{Summary: text, RetainedTail: retained, TokensBefore: tokensBefore, EstimatedTokensAfter: tokensAfter, Usage: usage, Timestamp: time.Now().UnixMilli()}
 	if persist != nil {
 		if err := persist(result); err != nil {
 			return CompactionResult{}, fmt.Errorf("persist compaction: %w", err)

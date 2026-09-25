@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"strings"
@@ -23,6 +24,13 @@ import (
 )
 
 func main() {
+	if len(os.Args) == 2 && os.Args[1] == "--agy-mcp-stdio" {
+		if err := runAgyMCPChild(); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		return
+	}
 	var prompt, model, thinking, systemPrompt, cwd string
 	var serve bool
 	var sessionPath string
@@ -63,6 +71,7 @@ func main() {
 		systemPrompt = systemprompt.Default(cwd)
 	}
 	if printIdentity {
+
 		identity, identityErr := loadServerIdentity()
 		if identityErr != nil {
 			fmt.Fprintln(os.Stderr, identityErr)
@@ -127,7 +136,18 @@ func main() {
 	codexProvider := newCodexProvider(defaultCodexEndpoint, authManager.Token)
 	defer codexProvider.Close()
 	apiProvider := newAPIProvider(authManager.APIRuntimeConfig)
-	provider := &providerRouter{codex: codexProvider, api: apiProvider}
+	var agyProviderInstance *agyProvider
+	if binary, lookupErr := agyBinary(); lookupErr == nil {
+		agyProviderInstance = newAgyProvider(binary)
+		agyProviderInstance.policyReady = true
+	}
+	var claudeProviderInstance *claudeCLIProvider
+	if binary, err := exec.LookPath("claude"); err == nil {
+		claudeProviderInstance = newClaudeCLIProvider(binary)
+	}
+	runtimeClaudeProvider = claudeProviderInstance
+	runtimeAgyProvider = agyProviderInstance
+	provider := &providerRouter{codex: codexProvider, api: apiProvider, agy: agyProviderInstance, claude: claudeProviderInstance}
 	classifierConfig, err := newClassifierSettings()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "classifier settings:", err)
@@ -142,6 +162,28 @@ func main() {
 		}
 		if selectedThinking == "" {
 			selectedThinking = thinking
+		}
+		if strings.HasPrefix(selectedModel, "claude/") && !claudeEffortAllowed(selectedThinking) {
+			return nil, errors.New("Claude thinking effort must be low, medium, high, xhigh, or max (off and minimal are unsupported)")
+		}
+		if strings.HasPrefix(selectedModel, "agy/") {
+			if agyProviderInstance == nil {
+				_, err := agyBinary()
+				return nil, err
+			}
+			if _, err := readyAgyModels(context.Background(), workspace); err != nil {
+				return nil, err
+			}
+
+		}
+		if strings.HasPrefix(selectedModel, "claude/") {
+			if claudeProviderInstance == nil {
+				return nil, errors.New("Claude Code is not installed; install `claude` and restart pi-go-agent")
+			}
+			if !claudeModelAllowed(strings.TrimPrefix(selectedModel, "claude/")) {
+				return nil, errors.New("unsupported Claude model")
+			}
+
 		}
 		promptForWorkspace := systemprompt.Default(workspace)
 		if customSystemPrompt {
@@ -338,6 +380,14 @@ type backendResponse struct {
 	ExpiresAt          int64               `json:"expiresAt,omitempty"`
 	UserCode           string              `json:"userCode,omitempty"`
 	VerificationURI    string              `json:"verificationUri,omitempty"`
+	ClaudeInstalled    *bool               `json:"claudeInstalled,omitempty"`
+	ClaudeReady        *bool               `json:"claudeReady,omitempty"`
+	ClaudeSetupCommand string              `json:"claudeSetupCommand,omitempty"`
+	ClaudeSetupMessage string              `json:"claudeSetupMessage,omitempty"`
+	AgyInstalled       *bool               `json:"agyInstalled,omitempty"`
+	AgyReady           *bool               `json:"agyReady,omitempty"`
+	AgySetupCommand    string              `json:"agySetupCommand,omitempty"`
+	AgySetupMessage    string              `json:"agySetupMessage,omitempty"`
 	Provider           string              `json:"provider,omitempty"`
 	ProviderConfigs    []apiPublicConfig   `json:"providerConfigs,omitempty"`
 	ProviderConfig     *apiPublicConfig    `json:"providerConfig,omitempty"`
