@@ -73,7 +73,8 @@ path, origin, build = sys.argv[1:]
 with open(path, 'rb') as handle:
     manifest = plistlib.load(handle)
 item = manifest['items'][0]
-item['assets'][0]['url'] = origin.rstrip('/') + '/ios/Forge.ipa'
+# Versioned URLs keep iOS and the CDN from installing a cached older build.
+item['assets'][0]['url'] = origin.rstrip('/') + '/ios/Forge.ipa?v=' + build
 item['metadata']['bundle-version'] = build
 with open(path, 'wb') as handle:
     plistlib.dump(manifest, handle, fmt=plistlib.FMT_XML, sort_keys=False)
@@ -86,7 +87,7 @@ import re, sys
 path, origin, version, build = sys.argv[1:]
 p = Path(path)
 text = p.read_text()
-manifest = origin.rstrip('/') + '/ios/manifest.plist'
+manifest = origin.rstrip('/') + '/ios/manifest.plist?v=' + build
 link = 'itms-services://?action=download-manifest&url=' + quote(manifest, safe='')
 text = re.sub(r'itms-services://[^\"]+', link.replace('&', '&amp;'), text)
 text = re.sub(r'Version [^<]+', f'Version {version} (Build {build})', text, count=1)
