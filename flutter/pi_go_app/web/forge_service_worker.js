@@ -1,10 +1,10 @@
-const CACHE_NAME = 'forge-web-v6';
+const CACHE_NAME = 'forge-web-v7';
 const APP_SHELL = [
   './',
   './index.html',
-  './flutter_bootstrap.js?v=6',
+  './flutter_bootstrap.js?v=7',
   './flutter.js',
-  './main.dart.js?v=6',
+  './main.dart.js?v=7',
   './manifest.json',
   './version.json',
   './favicon.png',
