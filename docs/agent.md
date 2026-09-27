@@ -2,6 +2,98 @@
 
 `pi-go-agent` runs on the machine whose files and shell you want the model to use.
 
+## Install
+
+On Linux or macOS:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/peterw22/forge/main/install.sh | bash
+```
+
+To read the script before it runs, download it first:
+
+```bash
+curl -fsSL -o install.sh https://raw.githubusercontent.com/peterw22/forge/main/install.sh
+less install.sh
+bash install.sh
+```
+
+The script installs `pi-go-agent` for your user alone and needs no administrator. It downloads an executable that the [release workflow](releasing.md) built, and compiles nothing. It:
+
+1. asks which address and port the agent listens on;
+2. asks where the first session works;
+3. offers a tunnel, where `cloudflared` is installed;
+4. on Linux, asks whether the agent starts at boot;
+5. downloads the release that the script names and compares it with the checksum of the release;
+6. asks for your first device;
+7. starts the service and prints the address to enter in Forge.
+
+| Installed | Linux | macOS |
+|---|---|---|
+| The executable | `~/.local/bin/pi-go-agent` | `~/.local/bin/pi-go-agent` |
+| The service | `~/.config/systemd/user/forge-agent.service` | `~/Library/LaunchAgents/com.tingouw.forge-agent.plist` |
+| The tunnel, if chosen | `forge-agent-tunnel.service` | `com.tingouw.forge-agent-tunnel.plist` |
+| The logs | `~/.pi-go/logs/` | `~/.pi-go/logs/` |
+
+The service is restarted when it stops. It runs with the `PATH` of the shell that installed it, so the commands of the model find the programs that you find.
+
+### Your first device
+
+In Forge, open the settings menu and choose **Copy device whitelist entry**. Paste the entry when the script asks. The agent checks that the fingerprint of the entry is that of its key before it lists the device.
+
+To add a device later:
+
+```bash
+pbpaste | pi-go-agent --authorize-device        # macOS; any file or pipe will do
+systemctl --user restart forge-agent            # Linux
+launchctl kickstart -k gui/$(id -u)/com.tingouw.forge-agent   # macOS
+```
+
+### Starting at boot
+
+A service of a user starts when the user logs in. On Linux the script offers to start it at boot instead, which a machine without a screen needs. It does so with `loginctl enable-linger`, which may ask for an administrator.
+
+On macOS the service starts when you log in.
+
+### A tunnel
+
+Forge in a browser requires a `wss://` address. Where `cloudflared` is installed, the script offers one:
+
+| Tunnel | Needs | Address |
+|---|---|---|
+| Quick | Nothing | `wss://<random>.trycloudflare.com/ws`, which changes whenever the tunnel restarts |
+| Named | `cloudflared tunnel login` and a domain in your Cloudflare account | `wss://<your hostname>/ws`, which stays |
+
+A tunnel makes the agent reachable from the internet. Only a device that is listed passes the handshake, but read [the internet](#the-internet) first. The named tunnel has been tested against a stand-in for `cloudflared` only.
+
+### Without questions
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/peterw22/forge/main/install.sh |
+  bash -s -- --yes --host 127.0.0.1 --port 7346 --tunnel quick --device-file device.json
+```
+
+| Option | Meaning | Default with `--yes` |
+|---|---|---|
+| `--host <address>` | The address to listen on; `0.0.0.0` is every interface | `127.0.0.1` |
+| `--port <port>` | The port | `7346` |
+| `--cwd <directory>` | Where the first session works | Your home |
+| `--tunnel <kind>` | `none`, `quick` or `named` | `none` |
+| `--hostname <name>` | The hostname of a named tunnel | |
+| `--device-file <file>` | A device entry to authorize | |
+| `--linger <yes\|no>` | Linux: start at boot | `no` |
+| `--version <tag>` | The release to install | The release that the script names |
+| `--binary <file>` | Install this executable instead of a release | |
+| `--uninstall` | Remove the services and the executable | |
+
+### Removing it
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/peterw22/forge/main/install.sh | bash -s -- --uninstall
+```
+
+`~/.pi-go` stays, with the keys of the agent, its devices and its logs.
+
 ## Build
 
 Go 1.26 or newer.
@@ -42,7 +134,7 @@ signs in to OpenAI Codex. The other providers are set up from Forge or their own
 ./pi-go-agent --serve
 ```
 
-Every network listener requires [device authentication](security/device-authentication.md). Add your device to `~/.pi-go/authorized-devices.json` before you connect.
+Every network listener requires [device authentication](security/device-authentication.md). Add your device with `--authorize-device` before you connect; see [your first device](#your-first-device).
 
 A WebSocket listener answers a health check at `/healthz`.
 
@@ -71,6 +163,7 @@ Forge's protocol authenticates and encrypts on its own, and has not been indepen
 | `--serve` | Serve on standard input and output |
 | `--allow-remote` | Permit an address that is not loopback |
 | `--authorized-devices <file>` | The device whitelist |
+| `--authorize-device` | Add the device entry on standard input to the whitelist and exit |
 | `--print-identity` | Print the agent's identity and exit |
 | `--cwd <directory>` | The working directory of the first session |
 | `--model <id>` | The model |

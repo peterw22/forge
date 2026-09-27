@@ -29,6 +29,9 @@ jobs:
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
+      - name: Check that install.sh installs this release
+        if: github.ref_type == 'tag'
+        run: grep -qx "RELEASE=\"$GITHUB_REF_NAME\"" install.sh
       - run: go vet ./...
       - run: go test ./...
 

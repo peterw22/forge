@@ -80,6 +80,18 @@ Because whoever controls the agent controls the machine, Forge is built around t
 
 ## Quick start
 
+### Install the agent
+
+On the machine you want to work on, Linux or macOS:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/peterw22/forge/main/install.sh | bash
+```
+
+The script downloads a released executable, checks it, and installs it as a service of your user. It asks which address and port to listen on, offers a `wss://` address through `cloudflared` where that is installed, and adds your first device from the entry you paste. See [installing the agent](docs/agent.md#install).
+
+### Or build it
+
 You need Go 1.26 or newer and, for the client, Flutter.
 
 **1. Build and start the agent** on the machine you want to work on:

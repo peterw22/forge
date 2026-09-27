@@ -3,9 +3,13 @@
 A tag publishes a release. [`release.yml`](../.github/workflows/release.yml) tests the code on Linux and macOS, builds `pi-go-agent` on each, and publishes the archives on GitHub.
 
 ```bash
+sed -i.bak 's/^RELEASE=.*/RELEASE="v1.2.3"/' install.sh && rm install.sh.bak
+git commit -m "install v1.2.3" install.sh
 git tag v1.2.3
-git push origin v1.2.3
+git push origin main v1.2.3
 ```
+
+[`install.sh`](../install.sh) names the release it installs. The workflow refuses a tag that the script does not name, so that the script on `main` never asks for a release that does not exist for long.
 
 | Archive | Built on | Holds |
 |---|---|---|
