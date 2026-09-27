@@ -4,6 +4,64 @@ Run a coding agent on your own machine and control it from your phone, your desk
 
 The agent reads and edits files and runs shell commands in a workspace you choose. Forge shows its work as it happens, asks you before anything risky runs, and notifies you when it needs you or has finished.
 
+## Quick start
+
+**1. Install the agent** on the machine you want to work on, Linux or macOS:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/peterw22/forge/main/install.sh | bash
+```
+
+The script downloads a released executable, checks it, and runs it as a service of your user. It needs no administrator, and the service restarts by itself. On Linux it offers to start at boot, for a machine without a screen.
+
+**2. Choose how Forge reaches the agent** when the script asks:
+
+| | Your network | Quick tunnel | Named tunnel |
+|---|---|---|---|
+| Reach the agent from | The same network or VPN | Anywhere | Anywhere |
+| Address in Forge | `ws://192.168.1.20:7346/ws` | `wss://<random>.trycloudflare.com/ws` | `wss://agent.example.com/ws` |
+| The address stays | As long as the machine keeps its address | No: it changes whenever the tunnel restarts | Yes |
+| Forge in a browser | No, it requires `wss://` | Yes | Yes |
+| You need | Nothing | [`cloudflared`](https://github.com/cloudflare/cloudflared#installing-cloudflared) | `cloudflared`, and a domain in a Cloudflare account |
+| Answer the script with | An address of your network, and no tunnel | `127.0.0.1`, and the quick tunnel | `127.0.0.1`, and the named tunnel |
+
+A quick tunnel is for trying Forge out. For an agent that you keep, use your network or a named tunnel.
+
+The same, as options. The script asks for what you leave out:
+
+```bash
+# Your network
+curl -fsSL https://raw.githubusercontent.com/peterw22/forge/main/install.sh |
+  bash -s -- --host 192.168.1.20 --tunnel none
+
+# Quick tunnel
+curl -fsSL https://raw.githubusercontent.com/peterw22/forge/main/install.sh |
+  bash -s -- --host 127.0.0.1 --tunnel quick
+
+# Named tunnel
+cloudflared tunnel login
+curl -fsSL https://raw.githubusercontent.com/peterw22/forge/main/install.sh |
+  bash -s -- --host 127.0.0.1 --tunnel named --hostname agent.example.com
+```
+
+A tunnel makes the agent reachable from the internet. Only a device that you have listed passes the handshake, but read the [threat model](docs/security/threat-model.md) before you choose one.
+
+**3. Let your device in.** Open Forge: in a browser, at [forge.tingouw.com](https://forge.tingouw.com), or as an app; see [getting Forge](#getting-forge). In its settings menu, choose **Copy device whitelist entry**, and paste the entry when the script asks for your first device.
+
+**4. Connect.** Enter the address that the script prints. Forge shows the fingerprint of the agent; compare it with the one the script printed, and choose **Trust this server**.
+
+**5. Sign in to a model provider** on the agent's machine:
+
+```bash
+~/.local/bin/pi-go-agent --login      # OpenAI Codex
+```
+
+The other [providers](#model-providers) are set up from Forge or by their own programs.
+
+More in [installing the agent](docs/agent.md#install): every option, adding a device later, and removing the agent. To build the agent yourself, see [building from source](#building-from-source).
+
+## Design
+
 Because whoever controls the agent controls the machine, Forge is built around three questions:
 
 | Question | Answer |
@@ -78,19 +136,7 @@ Because whoever controls the agent controls the machine, Forge is built around t
 - A live view of the agent's browser, which you can take over.
 - Notifications on your lock screen, encrypted end to end.
 
-## Quick start
-
-### Install the agent
-
-On the machine you want to work on, Linux or macOS:
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/peterw22/forge/main/install.sh | bash
-```
-
-The script downloads a released executable, checks it, and installs it as a service of your user. It asks which address and port to listen on, offers a `wss://` address through `cloudflared` where that is installed, and adds your first device from the entry you paste. See [installing the agent](docs/agent.md#install).
-
-### Or build it
+## Building from source
 
 You need Go 1.26 or newer and, for the client, Flutter.
 
@@ -128,17 +174,56 @@ flutter run -d macos                  # or: -d <device>
 
 and choose **Trust this server**.
 
-To use the agent from another machine on your network, see [running the agent](docs/agent.md#other-machines-on-your-network).
+To use the agent from another machine, see the [quick start](#quick-start) or [running the agent](docs/agent.md#other-machines-on-your-network).
+
+## Getting Forge
+
+| | Where | Notifications |
+|---|---|---|
+| In a browser | [forge.tingouw.com](https://forge.tingouw.com) | Push, once you allow it |
+| On a phone | The App Store and Google Play, once Forge is published there, free of charge. Until then, build it | Push, in the published apps |
+| On a desktop | Build it | See below |
+
+### In a browser
+
+[forge.tingouw.com](https://forge.tingouw.com) is the web client, built from this repository. There is nothing to install.
+
+- A browser connects to `wss://` addresses only, so the agent needs a [tunnel](#quick-start) or a proxy that provides TLS.
+- The page is only the program. Your browser connects to your agent directly; a conversation does not pass through the site.
+- The identity of the device is a key that the browser keeps. Clearing the data of the site makes it a new device.
+- Notifications are off until you choose **Turn on notifications** in the settings menu. On an iPhone or iPad, add Forge to the Home Screen first; Safari notifies only for a web app that is installed.
+
+### An app that you build
+
+The [client README](flutter/pi_go_app/README.md) describes the build for each platform. The Linux client works as it is. The iOS, Android and macOS apps need your own signing.
+
+**Push notifications do not work in an iOS, Android or macOS app that you build yourself.** Everything else does: connecting, the conversation, approvals, the live browser. A web client that you build and host is notified like any other, because a browser asks for no signature.
+
+The reason is how Apple and Google deliver notifications:
+
+1. The agent encrypts a notification and hands it to the push relay.
+2. The relay passes it to Apple or Google with the credentials of one developer account.
+3. Apple and Google deliver it only to an app that the same account signed.
+
+The relay at `forge-push.tingouw.com` holds the credentials of the maintainer's account. Your build is signed by yours, so a notification for it is refused. The relay is not closed to you on purpose; no relay can reach an app of another account.
+
+| You want | Do |
+|---|---|
+| No notifications | Build the client with `--dart-define=FORGE_PUSH_RELAY_URL=` and start the agent with `PI_GO_PUSH_DISABLED=true`. |
+| Notifications, now | Run a relay of your own with your credentials, and build the clients for it. See [running your own deployment](docs/deployment.md) |
+| Notifications, without any of that | Wait for the apps in the stores |
 
 ## Clients
 
 | Platform | Connects to | Notifications |
 |---|---|---|
-| iOS | A remote agent | Push, while closed |
-| Android | A remote agent | Push, while closed |
-| macOS | A remote agent, or one the app starts itself | Push, while running |
+| iOS | A remote agent | Push, while closed[^push] |
+| Android | A remote agent | Push, while closed[^push] |
+| macOS | A remote agent, or one the app starts itself | Push, while running[^push] |
 | Linux (Flatpak) | A remote agent | Desktop, while running |
-| Web | A remote agent, over `wss://` only | None |
+| Web | A remote agent, over `wss://` only | Push, while closed |
+
+[^push]: In an app of the maintainer's account. See [an app that you build](#an-app-that-you-build).
 
 There is also a terminal client, `pi-go-tui`.
 
@@ -201,7 +286,7 @@ cd worker-push && npm install && npm run typecheck && npm test
 
 Forge is a personal project in active use by its author. Expect changes to the protocol and the session format.
 
-The app identifier, signing team and relay address in this repository belong to the maintainer. The agent, the web client and the Linux client work as they are; the iOS, Android and macOS apps need your own signing to build. See [running your own deployment](docs/deployment.md).
+The app identifier, signing team and relay address in this repository belong to the maintainer. The agent, the web client and the Linux client work as they are; the iOS, Android and macOS apps need your own signing to build, and [have no push notifications](#an-app-that-you-build) then. See [running your own deployment](docs/deployment.md).
 
 ## Names
 
