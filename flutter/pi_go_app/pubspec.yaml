@@ -1,5 +1,5 @@
 name: pi_go_app
-description: "A new Flutter project."
+description: "Forge, a client for pi-go-agent on iOS, Android, macOS, Linux and the web."
 # The following line prevents the package from being accidentally published to
 # pub.dev using `flutter pub publish`. This is preferred for private packages.
 publish_to: 'none' # Remove this line if you wish to publish to pub.dev
