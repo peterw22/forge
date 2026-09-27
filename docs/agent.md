@@ -84,7 +84,20 @@ curl -fsSL https://raw.githubusercontent.com/peterw22/forge/main/install.sh |
 | `--linger <yes\|no>` | Linux: start at boot | `no` |
 | `--version <tag>` | The release to install | The release that the script names |
 | `--binary <file>` | Install this executable instead of a release | |
+| `--update` | Replace the executable and restart; everything else stays | |
 | `--uninstall` | Remove the services and the executable | |
+
+### Updating
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/peterw22/forge/main/install.sh | bash -s -- --update
+```
+
+This downloads the release that the script names, replaces the executable and restarts the agent. It asks nothing. The address, the port, the tunnel and the devices stay as they are, and so does the address of a quick tunnel, since the tunnel is not restarted.
+
+A running conversation is cut off by the restart. Its session is kept.
+
+To change the address, the port or the tunnel, run the script without `--update` and answer again.
 
 ### Removing it
 

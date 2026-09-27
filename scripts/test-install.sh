@@ -98,6 +98,18 @@ grep -q '"deviceId": "phone-id"' "$WHITELIST"
 grep -q '"deviceId": "laptop-id"' "$WHITELIST"
 check "a second installation keeps the first device"
 
+# An update replaces the executable, asks nothing and keeps what was set.
+agent_pid() {
+  pgrep -f "$FORGE_BIN_DIR/pi-go-agent --listen ws://127.0.0.1:$PORT/ws"
+}
+pid="$(agent_pid)"
+"$ROOT/install.sh" --update --binary "$TEST/pi-go-agent" >/dev/null
+healthy
+[ "$(agent_pid)" != "$pid" ]
+grep -q '"deviceId": "phone-id"' "$WHITELIST"
+grep -q '"deviceId": "laptop-id"' "$WHITELIST"
+check "an update restarts the agent and keeps its devices"
+
 # A device whose fingerprint is not that of its key stops the installation.
 sed 's/"fingerprint": "[^"]*"/"fingerprint": "wrong"/' "$TEST/phone.json" >"$TEST/forged.json"
 if "$ROOT/install.sh" --yes --binary "$TEST/pi-go-agent" --port "$PORT" \
@@ -117,4 +129,29 @@ done
 [ ! -e "$FORGE_BIN_DIR/pi-go-agent" ]
 [ -f "$WHITELIST" ]
 check "uninstalling stops the service and keeps the devices"
+
+if "$ROOT/install.sh" --update --binary "$TEST/pi-go-agent" >/dev/null 2>&1; then
+  echo "an update installed an agent where there was none" >&2
+  exit 1
+fi
+check "an update of nothing is refused"
+
+# Another program on the port answers the health check in place of the
+# service, which must not pass for an installation that works.
+"$TEST/pi-go-agent" --listen "ws://127.0.0.1:$PORT/ws" --cwd "$WORKSPACE" >/dev/null 2>&1 &
+other=$!
+count=0
+until healthy; do
+  count=$((count + 1))
+  [ "$count" -lt 15 ]
+  sleep 1
+done
+if "$ROOT/install.sh" --yes --binary "$TEST/pi-go-agent" --port "$PORT" \
+  --cwd "$WORKSPACE" --linger no >/dev/null 2>&1; then
+  kill "$other"
+  echo "an installation on a port that is taken was reported as working" >&2
+  exit 1
+fi
+kill "$other"
+check "a port that another program holds fails the installation"
 echo "All checks passed."

@@ -54,6 +54,8 @@ Installs pi-go-agent as a service of the current user.
   --version <tag>        The release to install. Default: $RELEASE.
   --binary <file>        Install this executable instead of a release.
   --yes                  Ask nothing; take the defaults for what is not given.
+  --update               Replace the executable of an installed agent and
+                         restart it. Its address, tunnel and devices stay.
   --uninstall            Remove the services and the executable.
   --help                 Show this.
 
@@ -122,6 +124,10 @@ parse_options() {
         ;;
       --yes | -y)
         ASSUME_YES=1
+        shift
+        ;;
+      --update)
+        ACTION=update
         shift
         ;;
       --uninstall)
@@ -682,17 +688,44 @@ start_macos() {
   fi
 }
 
+service_running() {
+  if [ "$OS" = linux ]; then
+    systemctl --user is-active --quiet "$SERVICE.service"
+    return
+  fi
+  local domain
+  for domain in "gui/$(id -u)" "user/$(id -u)"; do
+    if launchctl print "$domain/com.tingouw.$SERVICE" 2>/dev/null | grep -q 'state = running'; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+# An answer on the port proves little alone: another program may hold the port
+# while the service fails to open it, again and again. A service that fails so
+# is not running a moment later.
+agent_answers() {
+  curl --fail --silent --max-time 2 -o /dev/null "http://$1:$PORT/healthz" || return 1
+  service_running || return 1
+  sleep 2
+  service_running
+}
+
 wait_for_agent() {
   local host="$HOST" count=0
   [ "$host" = 0.0.0.0 ] && host=127.0.0.1
   while [ "$count" -lt 30 ]; do
-    if curl --fail --silent --max-time 2 -o /dev/null "http://$host:$PORT/healthz"; then
+    if agent_answers "$host"; then
       say "The agent answers on port $PORT."
       return 0
     fi
     sleep 1
     count=$((count + 1))
   done
+  if port_in_use "$host" "$PORT" && ! service_running; then
+    warn "Another program holds port $PORT, so the agent cannot open it."
+  fi
   warn "The agent does not answer. The end of $LOG_DIR/$SERVICE.log:"
   tail -n 20 "$LOG_DIR/$SERVICE.log" >&2 2>/dev/null || true
   return 1
@@ -758,7 +791,53 @@ summary() {
   fi
   say "Log:        $LOG_DIR/$SERVICE.log"
   say "Devices:    $CONFIG_DIR/authorized-devices.json"
+  say "Update:     curl -fsSL https://raw.githubusercontent.com/$REPO/main/install.sh | bash -s -- --update"
   say "Uninstall:  curl -fsSL https://raw.githubusercontent.com/$REPO/main/install.sh | bash -s -- --uninstall"
+}
+
+# ---------------------------------------------------------------- update
+
+service_file() {
+  if [ "$OS" = linux ]; then
+    echo "$HOME/.config/systemd/user/$SERVICE.service"
+  else
+    echo "$HOME/Library/LaunchAgents/com.tingouw.$SERVICE.plist"
+  fi
+}
+
+update() {
+  local address domain restarted=0
+  service_installed || fail "No agent is installed under the name $SERVICE. Run this without --update."
+  # The service knows where the agent listens.
+  address="$(grep -Eo 'ws://[0-9.]+:[0-9]+/' "$(service_file)" | awk 'NR == 1')" || true
+  HOST="$(printf '%s' "$address" | sed -e 's|^ws://||' -e 's|:.*||')"
+  PORT="$(printf '%s' "$address" | sed -e 's|.*:||' -e 's|/$||')"
+  { valid_ipv4 "$HOST" && valid_port "$PORT"; } || fail "$(service_file) does not say where the agent listens. Install again without --update."
+  WORK="$(mktemp -d "${TMPDIR:-/tmp}/forge-install.XXXXXX")"
+  trap cleanup EXIT
+  install_binary
+  step "Restarting the service"
+  if [ "$OS" = linux ]; then
+    prepare_systemd
+    systemctl --user restart "$SERVICE.service"
+  else
+    for domain in "gui/$(id -u)" "user/$(id -u)"; do
+      if launchctl kickstart -k "$domain/com.tingouw.$SERVICE" 2>/dev/null; then
+        restarted=1
+        break
+      fi
+    done
+    [ "$restarted" = 1 ] || launchd_start "com.tingouw.$SERVICE" "$(service_file)"
+  fi
+  wait_for_agent || fail "The agent was updated but did not start."
+  if [ -n "$BINARY" ]; then
+    say "The agent is updated."
+  else
+    say "The agent is updated to $VERSION."
+  fi
+  if [ -f "$LOG_DIR/$SERVICE-tunnel.log" ] && [ -f "$(service_file | sed -e "s|$SERVICE\.|$SERVICE-tunnel.|")" ]; then
+    say "The tunnel was left running, so its address is the same."
+  fi
 }
 
 # ---------------------------------------------------------------- uninstall
@@ -791,6 +870,10 @@ main() {
   detect_platform
   if [ "$ACTION" = uninstall ]; then
     uninstall
+    return
+  fi
+  if [ "$ACTION" = update ]; then
+    update
     return
   fi
   if [ "$ASSUME_YES" = 0 ]; then
