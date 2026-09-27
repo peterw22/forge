@@ -1,69 +1,37 @@
-# Pi Go Flutter client
+# Forge client
 
-Native Flutter clients for the `pi-go-agent` protocol. The macOS application is **Forge** (`com.tingouw.forge`) and is a WebSocket-only client: it does not bundle, launch, or manage a Go server.
+One Flutter project that builds Forge for iOS, Android, macOS, Linux and the web. It connects to [`pi-go-agent`](../../docs/agent.md).
 
-Start the agent separately:
+| Platform | Connects to | Notifications |
+|---|---|---|
+| iOS | A remote agent | Push, while closed |
+| Android | A remote agent | Push, while closed |
+| macOS | A remote agent, or one the app starts itself | Push, while running |
+| Linux | A remote agent | Desktop, while running |
+| Web | A remote agent | None |
+
+Minimum versions: iOS 15, macOS 12.
+
+## Run
+
+Start an agent, then the client:
 
 ```bash
-cd go
 ./pi-go-agent --listen ws://127.0.0.1:7346/ws --cwd /path/to/project
-```
 
-Then run the native macOS app:
-
-```bash
 cd flutter/pi_go_app
 flutter pub get
-flutter run -d macos
+flutter run -d macos      # or: -d chrome, -d <device>
 ```
 
-Build a distributable application and zip from the repository's `go/` directory:
+The agent requires your device on its whitelist. In Forge, open the settings menu, choose **Copy device whitelist entry**, and add it to `~/.pi-go/authorized-devices.json`. See [device authentication](../../docs/security/device-authentication.md#setting-it-up).
+
+## Test
 
 ```bash
-./scripts/build-macos-app.sh
-# dist/macos/Forge.app
-# dist/macos/Forge-macOS.zip
+flutter analyze
+flutter test
 ```
-
-Full Xcode is required for macOS builds. The build script auto-discovers `Developer ID Application` first, then `Apple Development`, then ad-hoc signing. `SIGN_IDENTITY` overrides this selection. `Apple Development: Tingou Wu (KUB5DTDMMS)` is available on the current development Mac, but Apple Development certificates are for local/testing builds and do not make browser-downloaded apps pass Gatekeeper on other Macs. Direct public distribution needs Developer ID Application signing plus notarization. Gatekeeper is the macOS service that assesses quarantined downloaded software; check it with `spctl --assess --type execute --verbose=2 dist/macos/Forge.app`.
-
-For browser use, start the WebSocket endpoint and run Flutter Web:
-
-```bash
-./pi-go-agent --listen ws://127.0.0.1:7346/ws --cwd /path/to/project
-flutter run -d chrome
-# or: flutter build web --release
-```
-
-## iOS / TestFlight
-
-Debug and Profile use `Runner/Runner.entitlements` with sandbox APNs. Release uses `Runner/RunnerRelease.entitlements` requesting production APNs for TestFlight/App Store distribution. A Release build installed directly by Xcode may still be re-signed with a development provisioning profile and receive a sandbox token; App Store Connect distribution replaces it with the production entitlement/profile.
-
-Every upload needs a unique build number. Build an App Store archive with full Xcode selected:
-
-```bash
-cd flutter/pi_go_app
-DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
-  flutter build ipa --release --export-method app-store
-```
-
-Upload `build/ios/ipa/*.ipa` through Xcode Organizer or Transporter. Bundle ID: `com.tingouw.forge`; Apple team: `QJ6C3M6J85`.
-
-## Android
-
-The Android application ID is `com.tingouw.forge` and the launcher name is **Forge**.
-
-```bash
-flutter build apk --release
-adb reverse tcp:7346 tcp:7346
-adb install -r build/app/outputs/flutter-apk/app-release.apk
-```
-
-With `adb reverse` active, the Android app's default `ws://127.0.0.1:7346/ws` address reaches the agent running on the development machine. Use a trusted WSS endpoint instead when the device is not connected over ADB.
-
-The macOS app sandbox is enabled with outbound-network and user-selected read-only file access. The app communicates only with the configured WebSocket backend. Its attached session ID is retained across connection drops, so reconnecting reattaches to the same detached run. Multiple Forge clients may observe one shared session, or select separate sessions that execute concurrently in the daemon. TCP and WebSocket listeners remain restricted to loopback by the Go backend unless `--allow-remote` is explicitly supplied.
-
-The **YOLO** switch immediately left of Sessions is session-specific. While enabled, `pi-go-agent` skips the Luna tool-safety classifier and manual approval gate. It can only be changed while the session is idle and is restored when that session is reopened.
 
 ## Platform look
 
@@ -79,48 +47,117 @@ Forge follows the platform it runs on; on the web this is the platform of the br
 
 Below 720 logical pixels the composer stacks its controls under the message and sends with an icon; the header switches to icon buttons below 820.
 
-## Image paste
+## Features
 
-Images can be attached with the image picker or pasted directly into the prompt on macOS, web, and Android. Clipboard images use the same preview, four-image, and 10 MiB total limits as picked files; ordinary text paste is preserved.
+- Streaming transcript with Markdown, a Thinking panel, and tool calls as folded panels that show an activity indicator while they run.
+- File writes shown as highlighted source, replacements as a diff.
+- Approval of operations the [safety gate](../../docs/security/safety-gate.md) holds.
+- Sessions: list, switch, create and name. `Ctrl-B` then `s` opens the list.
+- Model, thinking level, classifier model and workspace, per session.
+- Up to two connections at once, each with its own session.
+- Reconnects with increasing delay and reattaches to the session it left.
+- [Browser live view](../../docs/browser.md#live-view) with manual control.
+- **YOLO**, which turns the safety gate off for one session. It can only be changed while the session is idle.
 
-## Android FCM
+### Images
 
-Place the Firebase Android configuration at `android/app/google-services.json`; its package must be `com.tingouw.forge`. The file is ignored by Git. Build and install with:
+Attach images with the picker, or paste them into the prompt on macOS, the web and Android. At most four images and 10 MiB in total.
+
+### Fonts
+
+Latin, Greek and Cyrillic use the system font. Fonts for other scripts are downloaded the first time such text is displayed.
+
+## macOS
 
 ```bash
-flutter build apk --release
-adb install -r build/app/outputs/flutter-apk/app-release.apk
+./scripts/build-macos-app.sh
+# dist/macos/Forge.app
+# dist/macos/Forge-macOS.zip
 ```
 
-At launch Forge registers its FCM token with `https://forge-push.tingouw.com` using the Android Keystore P-256 identity. Agent pairing and notification scopes are shared with APNs. Notification taps route to the associated agent connection and session.
+Run from the repository root. Xcode is required.
 
-Android does not keep the WebSocket alive with a foreground service. FCM delivers approval/completion alerts while Forge is backgrounded or removed from Recents; tapping an alert reopens Forge and reconnects. Android Settings → Force stop disables FCM until Forge is opened again.
+The packaged app contains a universal `pi-go-agent` and offers a **Local** connection that starts it with your home directory as the workspace. Disconnecting a local connection stops that agent and any work in progress; Forge warns first. A remote agent is never stopped by disconnecting.
 
-## macOS production APNs
+The app is not sandboxed, because the agent it starts runs shell commands.
 
-The direct-download macOS build uses `Developer ID Application`, a Mac Team Direct provisioning profile, and `com.apple.developer.aps-environment = production`. Build it with:
+### Signing
+
+The script looks for a signing identity in this order: `Developer ID Application`, `Apple Development`, then ad hoc. `SIGN_IDENTITY` overrides the choice and `TEAM_ID` the team.
+
+| Identity | Runs on |
+|---|---|
+| Developer ID Application, notarized | Any Mac |
+| Apple Development, ad hoc | The Mac that built it; elsewhere Gatekeeper blocks it |
 
 ```bash
-DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer ./scripts/build-macos-app.sh
-```
-
-Xcode must be signed into team `QJ6C3M6J85` and have permission to manage profiles. The script compiles unsigned, applies the Developer ID identity and APNs entitlement, then uses Xcode's Developer ID export workflow to create/embed the restricted-entitlement profile. It fails if the final profile does not authorize production APNs.
-
-Public distribution still requires notarization. Configure a notarytool keychain profile, then submit and staple:
-
-```bash
-xcrun notarytool submit dist/macos/Forge-macOS.zip --keychain-profile forge-notary --wait
+codesign -dv --verbose=4 dist/macos/Forge.app
+spctl --assess --type execute --verbose=2 dist/macos/Forge.app
+xcrun notarytool submit dist/macos/Forge-macOS.zip --keychain-profile <profile> --wait
 xcrun stapler staple dist/macos/Forge.app
 ```
 
-### Encrypted Android notifications
+`codesign --verify` checks that the signature is intact. `spctl --assess` checks that Gatekeeper accepts it.
 
-Android push content uses per-agent/device AES-256-GCM keys provisioned through the already encrypted WebSocket. Forge verifies the agent's P-256 signature before importing the key into Android Keystore. A native `FirebaseMessagingService` decrypts data-only FCM messages before posting local notifications; no background Dart VM receives ciphertext. Unknown keys, modified metadata, and modified ciphertext are rejected without displaying a notification.
+Push on macOS needs a Developer ID build with a provisioning profile that authorizes production push. The script fails if the profile does not.
 
-### Encrypted Apple notifications
+## iOS
 
-iOS includes `ForgeNotificationService`, which authenticates/decrypts mutable-content APNs envelopes before replacing the generic alert, using a shared Keychain access group. macOS intentionally has no service extension: while Forge is running but unfocused, its app delegate receives opaque background APNs, decrypts with a mode-0600 key record, and posts a local notification. Closed-app macOS push is not targeted. Unknown keys or modified envelopes are rejected.
+```bash
+flutter build ipa --release --export-method app-store
+```
 
-### Classifier summaries
+Every upload needs a new build number. Debug and Profile builds use the sandbox push environment, Release builds the production one.
 
-The configured safety classifier produces one privacy-bounded sentence for every approval request and completed assistant turn. Forge persists completed-turn summaries for the session picker (time + summary only; UUIDs remain internal) and uses the same sentence as the body of end-to-end encrypted APNs/FCM notifications. Relay infrastructure sees only ciphertext and opaque event metadata.
+[`s3/`](../../s3/README.md) holds the script that builds an Ad Hoc release and publishes it for installation from a web page.
+
+## Android
+
+```bash
+flutter build apk --release
+adb reverse tcp:7346 tcp:7346
+adb install -r build/app/outputs/flutter-apk/app-release.apk
+```
+
+With `adb reverse`, the default address `ws://127.0.0.1:7346/ws` reaches an agent on the development machine.
+
+The release build is signed with the debug key. Configure your own signing before you distribute it.
+
+Push needs a Firebase project. Put its `google-services.json` in `android/app/`; the file is ignored by Git.
+
+## Web
+
+```bash
+flutter run -d chrome
+flutter build web --wasm --release
+```
+
+Browsers that support it load the WebAssembly build; others fall back to JavaScript. [`s3/`](../../s3/README.md) holds the script that publishes it.
+
+## Linux
+
+See [`flatpak/README.md`](../../flatpak/README.md). The Linux client cannot be built on macOS.
+
+## Notifications
+
+Notification text is encrypted by the agent and decrypted on the device. The relay, Apple and Google carry ciphertext. See [the push relay](../../docs/security/push-relay.md).
+
+| Platform | Decrypted by |
+|---|---|
+| iOS | `ForgeNotificationService`, a notification service extension |
+| Android | A native messaging service; no Dart code runs |
+| macOS | The app, while it is running. A closed app receives nothing |
+
+Nothing is shown for an unknown key or a message that fails to decrypt.
+
+Tapping a notification opens the connection and session it belongs to. Notifications for the session you are looking at are suppressed.
+
+Android does not keep a connection open in the background. After **Force stop** in Android's settings, push is off until Forge is opened again.
+
+### Summaries
+
+The text of a notification is one sentence, written by the safety classifier under rules that keep commands, secrets and personal paths out of it. The same sentence labels the session in the session list.
+
+## Building your own
+
+The app identifier, the Apple team and the relay address in this project belong to the maintainer. See [running your own deployment](../../docs/deployment.md).

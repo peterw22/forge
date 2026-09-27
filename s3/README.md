@@ -1,32 +1,66 @@
-# Forge Ad Hoc iOS distribution
+# Publishing builds
 
-This directory contains the static installation website and the Ad Hoc IPA uploaded to Cloudflare R2 bucket `forge-app`, served at `https://forge-app.tingouw.com`.
+Scripts that publish the iOS app and the web client to Cloudflare R2. They are the maintainer's release process; the addresses and buckets below are the maintainer's. To publish your own builds, see [running your own deployment](../docs/deployment.md).
 
-Files:
+| Script | Publishes | To |
+|---|---|---|
+| `deploy.sh` | An Ad Hoc build of the iOS app and an installation page | Bucket `forge-app`, served at `https://forge-app.tingouw.com` |
+| `deploy-web.sh` | The web client | Bucket `forge-web`, served at `https://forge.tingouw.com` |
 
-- `index.html` — Safari installation page
-- `manifest.plist` — Apple OTA installation manifest
-- `404.html` — root/fallback copy generated from `index.html`
-- `ios/Forge.ipa` — generated Ad Hoc IPA (created by deployment)
-- `deploy.sh` — builds, verifies, and uploads all objects with Wrangler
+Both upload with Wrangler, using the login in `worker-push/`.
 
-Deploy version 1.0.0 build 3:
-
-```bash
-./s3/deploy.sh
-```
-
-Override values when publishing another build:
+## iOS
 
 ```bash
-BUILD_NAME=1.0.0 BUILD_NUMBER=4 \
-PUBLIC_ORIGIN=https://forge-app.tingouw.com \
-R2_BUCKET=forge-app ./s3/deploy.sh
+BUILD_NAME=1.0.1 BUILD_NUMBER=21 ./s3/deploy.sh
 ```
 
-Before building, register every target iPhone UDID in Apple Developer. Xcode automatically creates/downloads an Ad Hoc profile containing currently registered devices. Adding another device requires rebuilding/re-exporting the IPA with a refreshed profile.
+Use a new build number for each release. The manifest and the installation link carry it, so that neither iOS nor the network serves a cached older build.
 
-Verify the public endpoints:
+| File | Purpose |
+|---|---|
+| `index.html`, `404.html` | The installation page |
+| `manifest.plist` | The manifest iOS reads to install the app |
+| `ios/Forge.ipa` | The build, created by the script and ignored by Git |
+
+An Ad Hoc build installs only on devices registered in its provisioning profile. Register a device in your Apple developer account, then build again.
+
+### Before it uploads
+
+The script refuses to publish unless:
+
+- the app and its notification extension have valid signatures;
+- the push environment is production;
+- the app and the extension have the expected identifiers and share the keychain group for notification keys;
+- both carry the build number that was asked for;
+- the app and the extension are provisioned for the same devices.
+
+### Local configuration
+
+Signing details stay out of the repository. Create these two files in `s3/`; both are ignored by Git.
+
+`AdHocExportOptions.plist`: copy `AdHocExportOptions.example.plist` and fill in your team and the names of your provisioning profiles.
+
+`deploy.local.env`, optional:
+
+```bash
+# How many devices the profile must contain
+EXPECTED_ADHOC_DEVICE_COUNT=2
+# Devices that must be among them, separated by spaces or commas
+REQUIRED_ADHOC_DEVICES="<UDID> <UDID>"
+```
+
+### Settings
+
+| Variable | Default |
+|---|---|
+| `BUILD_NAME`, `BUILD_NUMBER` | `1.0.0`, `13` |
+| `R2_BUCKET` | `forge-app` |
+| `PUBLIC_ORIGIN` | `https://forge-app.tingouw.com` |
+| `TEAM_ID`, `BUNDLE_ID` | The maintainer's |
+| `EXPORT_OPTIONS` | `s3/AdHocExportOptions.plist` |
+
+### Check
 
 ```bash
 curl -I https://forge-app.tingouw.com/
@@ -34,19 +68,28 @@ curl -I https://forge-app.tingouw.com/ios/manifest.plist
 curl -I https://forge-app.tingouw.com/ios/Forge.ipa
 ```
 
-## Web client
-
-`deploy-web.sh` builds the Flutter web app and uploads it to the root of the separate R2 bucket `forge-web`, served at `https://forge.tingouw.com`:
+## Web
 
 ```bash
-./s3/deploy-web.sh
-BUILD_NAME=1.0.1 BUILD_NUMBER=18 ./s3/deploy-web.sh
+BUILD_NAME=1.0.1 BUILD_NUMBER=21 ./s3/deploy-web.sh
 ```
 
-Set `WEB_PREFIX=web` to publish under a subpath instead (base href `/web/`).
+`WEB_PREFIX=web` publishes under `/web/`.
 
-The build uses `--wasm`: browsers with WasmGC load `main.dart.wasm` with the skwasm renderer, and others fall back to `main.dart.js` with CanvasKit. `main.dart.mjs` must be served as JavaScript or the WebAssembly build fails to start, and there's no fallback in that case. Without `Cross-Origin-Opener-Policy: same-origin` and `Cross-Origin-Embedder-Policy: require-corp` headers, skwasm runs single-threaded. If those headers are added (for example with a Cloudflare response header rule), the CSP's `worker-src 'self' blob:` lets its worker start.
+### Before each release
 
-Bump the `?v=` cache version in `web/index.html`, `web/flutter_bootstrap.js`, and `web/forge_service_worker.js` for each release so installed PWAs pick up the new build.
+Raise the cache version in these three files, so that installed copies pick up the new build:
 
-The IPA uses production APNs. Anyone may download a public IPA, but iOS installs it only on UDIDs embedded in the Ad Hoc provisioning profile.
+- `flutter/pi_go_app/web/index.html`
+- `flutter/pi_go_app/web/flutter_bootstrap.js`
+- `flutter/pi_go_app/web/forge_service_worker.js`
+
+### How it is served
+
+- Browsers that support it load the WebAssembly build; others fall back to JavaScript.
+- `main.dart.mjs` must be served as JavaScript. Otherwise the WebAssembly build fails to start, and there is no fallback in that case. The script sets the content type.
+- Entry files are revalidated on every load. Other files are cached for an hour.
+- The page is uploaded last, so that it never refers to a file that is not there yet.
+- The script refuses to publish if the service worker lists a file the build does not contain.
+
+The WebAssembly build runs on one thread unless the site sends `Cross-Origin-Opener-Policy: same-origin` and `Cross-Origin-Embedder-Policy: require-corp`.

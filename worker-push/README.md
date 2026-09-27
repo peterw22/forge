@@ -1,8 +1,8 @@
-# Forge Push Worker
+# Forge push relay
 
 Cloudflare Worker for Forge device/agent identity registration, explicit pairing, authorization, replay-protected agent events, and direct APNs delivery.
 
-The complete architecture and client/agent implementation sequence is documented in [`../plan/push-relay-implementation.md`](../plan/push-relay-implementation.md).
+The design, and what the relay's operator can and cannot see, is described in [the push relay](../docs/security/push-relay.md).
 
 ## Trust model
 
@@ -65,7 +65,7 @@ npx wrangler secret put PUSH_TOKEN_ENCRYPTION_KEY
 npm run deploy
 ```
 
-The checked-in topic is `com.tingouw.forge`. The iOS development build registers a sandbox token; TestFlight/App Store registers a production token.
+The topic in `wrangler.toml` is `com.tingouw.forge`, and the database ID and Firebase project there belong to the maintainer's deployment. Replace all three with your own. The iOS development build registers a sandbox token; TestFlight/App Store registers a production token.
 
 ## Implemented API
 
@@ -87,6 +87,8 @@ Signed agent API:
 
 - `POST /v1/agents/:agentId/pairings`
 - `GET /v1/agents/:agentId/pairings/:pairingId`
+- `GET /v1/agents/:agentId/authorizations`
+- `DELETE /v1/agents/:agentId/authorizations/:deviceId`
 - `POST /v1/agents/:agentId/events`
 
 The current Worker sends APNs inline. Before multi-user production deployment, place accepted events on a Cloudflare Queue and move APNs delivery/retries into the Queue consumer.

@@ -1,0 +1,183 @@
+# The push relay
+
+Phones suspend apps, so a connection to the agent cannot stay open. To tell you that a tool needs approval or that a turn has finished, a notification has to pass through Apple or Google, and through a relay that holds the credentials for those services.
+
+The relay in `worker-push/` is built so that its operator cannot read what it delivers.
+
+## Who holds what
+
+| Party | Holds | Never receives |
+|---|---|---|
+| Device | Its identity key, the content keys of paired agents | — |
+| Agent | Its identity key, the content keys of paired devices | The device's push token |
+| Relay | Apple and Google credentials, encrypted push tokens, who is paired with whom | Identity private keys, content keys, notification text |
+| Apple, Google | The push token | Notification text |
+
+Three kinds of key are involved, and no party holds all of them:
+
+1. **Device identity key**, kept on the device.
+2. **Agent identity key**, kept on the agent's machine.
+3. **Push service credentials**, stored only as secrets of the relay.
+
+## What the operator can and cannot see
+
+**Cannot see:** the title, the summary, the kind of event, and the session it belongs to. These are encrypted by the agent with a key the relay never receives. In its database the relay records the type and the session as the literal word `encrypted`.
+
+**Can see:**
+
+| Visible | Notes |
+|---|---|
+| Which agent notified which device, and when | Kept for 30 days |
+| Display names of devices and agents | Optional, chosen by the client |
+| Push tokens | Encrypted at rest with a key the relay holds |
+| The size of each message | Not padded |
+| Network addresses of agents and devices | As for any server |
+
+Apple and Google see similar metadata for the notifications they carry.
+
+## Content encryption
+
+```text
+agent                          relay                     device
+  |                              |                          |
+  |  content key, signed --------+------------------------->|  over the encrypted
+  |                              |                          |  agent connection
+  |  encrypt(title, summary,     |                          |
+  |          type, session)      |                          |
+  |  --- ciphertext ------------>|  --- ciphertext -------->|  decrypt, display
+```
+
+- The agent generates a random AES-256 key for each device it is paired with.
+- The key travels to the device over the [authenticated, encrypted agent connection](device-authentication.md), never through the relay. It is signed by the agent's identity key over `FORGE-PUSH-KEY-V1`, the agent ID, the device ID, the key ID and the key. The device verifies the signature before it stores the key.
+- Each notification is encrypted with AES-256-GCM and a random 12-byte nonce.
+- The associated data is `FORGE-PUSH-CONTENT-V1`, the agent ID, the device ID, the event ID and the key ID. A ciphertext that is altered, or delivered for another device or event, fails to decrypt.
+
+The plaintext contains only an event type, a session ID, a fixed title and a one-sentence summary. The summary is written by the [safety gate](safety-gate.md), which is instructed to leave out commands, secrets and paths that contain user names. The agent checks its length and form, and substitutes a fixed sentence when it does not pass.
+
+### On each platform
+
+| Platform | Delivery | Decryption |
+|---|---|---|
+| iOS | Alert that reads "Encrypted notification", marked as modifiable | A notification service extension decrypts it and replaces the text |
+| Android | Data-only message | A native messaging service decrypts it and posts the notification |
+| macOS | Background message | Forge decrypts it while it is running |
+
+On Android and iOS no Dart code runs to handle a push, and nothing is shown for an unknown key or a message that fails to decrypt.
+
+## Authenticating to the relay
+
+Devices and agents register a public key and prove that they hold the private key by signing a challenge. An identity that is registered cannot be replaced by another key.
+
+Every later request carries:
+
+```text
+X-Forge-Principal-Type: device | agent
+X-Forge-Principal-ID:   <id>
+X-Forge-Timestamp:      <Unix seconds>
+X-Forge-Nonce:          <random>
+X-Forge-Signature:      <signature>
+```
+
+over
+
+```text
+FORGE-REQUEST-V1
+<METHOD>
+<path>
+<timestamp>
+<nonce>
+<base64url SHA-256 of the exact body>
+```
+
+The relay rejects a timestamp more than 300 seconds off and a nonce it has seen. Signed endpoints take no query parameters.
+
+## Pairing
+
+Registering grants nothing. An agent may notify a device only after that device approves it.
+
+1. Over the agent connection, the agent proves its identity to the device by signing a challenge the device chose.
+2. The agent asks the relay to pair with the device. The relay creates a pairing that expires in five minutes and has a six-digit code.
+3. The agent sends the pairing ID and the code to the device over the agent connection.
+4. Forge fetches the pairing from the relay and shows the agent's name, fingerprint and the code.
+5. When the user approves, the device signs the approval and sends it to the relay.
+6. The agent provisions the content key over the agent connection.
+
+Only the device can approve, and an agent cannot approve its own pairing. Either side can revoke; revoking takes effect on the next event.
+
+## API
+
+Registration:
+
+- `GET /healthz`
+- `POST /v1/registration-challenges`
+- `POST /v1/registrations`
+
+Signed by a device:
+
+- `PUT`, `DELETE /v1/devices/{deviceId}/push-endpoint`
+- `GET /v1/devices/{deviceId}/pairings/{pairingId}`
+- `POST /v1/devices/{deviceId}/pairings/{pairingId}/approve`
+- `GET /v1/devices/{deviceId}/authorizations`
+- `DELETE /v1/devices/{deviceId}/authorizations/{agentId}`
+
+Signed by an agent:
+
+- `POST /v1/agents/{agentId}/pairings`
+- `GET /v1/agents/{agentId}/pairings/{pairingId}`
+- `GET /v1/agents/{agentId}/authorizations`
+- `DELETE /v1/agents/{agentId}/authorizations/{deviceId}`
+- `POST /v1/agents/{agentId}/events`
+
+Responses are sent with `Cache-Control: no-store`. Errors have the form:
+
+```json
+{ "error": { "code": "invalid_signature", "message": "Request signature is invalid" } }
+```
+
+## Limits and storage
+
+| | |
+|---|---|
+| Events per agent | 30 per minute by default |
+| Repeated event ID | Accepted once; a repeat is acknowledged and not delivered again |
+| Event records | Deleted after 30 days by a daily job |
+| Challenges, nonces, pairings | Deleted once expired |
+| Push tokens | AES-GCM encrypted; a hash enforces uniqueness |
+| Rejected tokens | Disabled when Apple or Google reports them invalid |
+
+## Limitations
+
+- **One long-lived content key per agent and device.** There is no rotation. If a key leaks, recorded ciphertext of earlier notifications can be read.
+- **The relay can drop or delay a notification.** No relay can prevent that.
+- **The relay can replay a notification.** Devices do not remember which events they have shown, so a repeated message is displayed again. It cannot be altered or retargeted.
+- **Message size is visible.**
+- **Delivery is attempted once, within the request.** There is no queue or retry.
+
+## Running your own
+
+The agent uses `https://forge-push.tingouw.com` unless `PI_GO_PUSH_RELAY_URL` names another relay. `PI_GO_PUSH_DISABLED=true` turns push off. The relay address in Forge is the constant `pushRelayBaseURL` in `flutter/pi_go_app/lib/push_identity.dart`.
+
+Deployment is described in [`worker-push/README.md`](../../worker-push/README.md). A push service only accepts notifications for apps signed by the account that owns the credentials, so your own relay needs your own build of Forge.
+
+## Tests
+
+| File | Covers |
+|---|---|
+| `worker-push/test/crypto.test.ts` | Request signing and signature verification |
+| `cmd/pi-go-agent/push_content_crypto_test.go` | Content encryption and its binding to agent, device and event |
+| `cmd/pi-go-agent/push_authorization_test.go` | Listing and revoking authorizations |
+
+## Related work
+
+- Web Push message encryption (RFC 8291) encrypts a payload so that the push service cannot read it.
+- Signal sends a push that carries no content and fetches the message over its own channel.
+
+Forge carries a short encrypted summary in the push itself, because the app cannot hold a connection to fetch one.
+
+## Possible improvements
+
+1. Pad messages to a fixed size.
+2. Rotate content keys.
+3. Keep less metadata: shorten retention, or do not record the device of each event.
+4. Reject events a device has already shown.
+5. Queue deliveries and retry them.
