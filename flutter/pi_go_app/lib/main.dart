@@ -233,6 +233,25 @@ String _sourceLanguageForPath(String path) {
   };
 }
 
+/// Flutter draws a tab as wide as one space, which flattens code indented
+/// with tabs. Previews show tab stops as spaces instead.
+String _expandTabs(String source, {int width = 4}) {
+  if (!source.contains('\t')) return source;
+  final expanded = StringBuffer();
+  var column = 0;
+  for (final rune in source.runes) {
+    if (rune == 0x09) {
+      final padding = width - column % width;
+      expanded.write(' ' * padding);
+      column += padding;
+    } else {
+      expanded.writeCharCode(rune);
+      column = rune == 0x0a ? 0 : column + 1;
+    }
+  }
+  return expanded.toString();
+}
+
 List<TextSpan> _syntaxSpans(
   String source,
   String language,
@@ -2597,7 +2616,11 @@ class _AgentPageState extends State<AgentPage> with WidgetsBindingObserver {
     final syntaxTheme = style.dark
         ? atomOneDarkReasonableTheme
         : atomOneLightTheme;
-    final highlighted = _syntaxSpans(bashCommand, 'bash', syntaxTheme);
+    final highlighted = _syntaxSpans(
+      _expandTabs(bashCommand),
+      'bash',
+      syntaxTheme,
+    );
     final codeStyle = style.mono(color: syntaxTheme['root']?.color);
     final mutationPreview = _approvalMutationPreview(request);
     // A phone gets a full-width bottom sheet; a window gets a centred panel.
@@ -5561,7 +5584,9 @@ class _AgentPageState extends State<AgentPage> with WidgetsBindingObserver {
     final arguments = item.toolArguments;
     final path = arguments is Map ? '${arguments['path'] ?? ''}' : '';
     final content = arguments is Map ? '${arguments['content'] ?? ''}' : '';
-    final normalized = content.replaceAll('\r\n', '\n').replaceAll('\r', '\n');
+    final normalized = _expandTabs(
+      content.replaceAll('\r\n', '\n').replaceAll('\r', '\n'),
+    );
     final lineCount = '\n'.allMatches(normalized).length + 1;
     final gutterWidth = lineCount.toString().length;
     final numbers = [
@@ -5689,8 +5714,8 @@ class _AgentPageState extends State<AgentPage> with WidgetsBindingObserver {
     final startLine = details is Map && details['startLine'] is num
         ? (details['startLine'] as num).toInt()
         : int.tryParse(reportedLine?.group(1) ?? '');
-    final oldLines = oldText.replaceAll('\r\n', '\n').split('\n');
-    final newLines = newText.replaceAll('\r\n', '\n').split('\n');
+    final oldLines = _expandTabs(oldText.replaceAll('\r\n', '\n')).split('\n');
+    final newLines = _expandTabs(newText.replaceAll('\r\n', '\n')).split('\n');
     final style = ForgeStyle.of(context);
     final dark = style.dark;
     final syntaxTheme = dark ? atomOneDarkReasonableTheme : atomOneLightTheme;

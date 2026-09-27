@@ -1,5 +1,7 @@
 import 'package:flutter/cupertino.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:google_fonts/google_fonts.dart';
 
 /// The design language Forge follows on the current platform.
 enum ForgeFamily {
@@ -102,22 +104,25 @@ class ForgeStyle {
   double get toolbarIconSize => touch ? 22 : 18;
 
   /// A fixed-pitch face that exists on the platform. `monospace` alone falls
-  /// back to the proportional system font on Apple platforms.
-  TextStyle mono({double? size, Color? color, double height = 1.45}) =>
-      TextStyle(
-        fontFamily: apple ? 'Menlo' : 'monospace',
-        fontFamilyFallback: const [
-          'SF Mono',
-          'Menlo',
-          'Roboto Mono',
-          'DejaVu Sans Mono',
-          'Consolas',
-          'monospace',
-        ],
-        fontSize: size ?? codeSize,
-        height: height,
-        color: color,
-      );
+  /// back to the proportional system font on Apple platforms. A browser gives
+  /// Flutter no system fonts at all, so the web client downloads one.
+  TextStyle mono({double? size, Color? color, double height = 1.45}) {
+    final style = TextStyle(
+      fontFamily: apple ? 'Menlo' : 'monospace',
+      fontFamilyFallback: const [
+        'SF Mono',
+        'Menlo',
+        'Roboto Mono',
+        'DejaVu Sans Mono',
+        'Consolas',
+        'monospace',
+      ],
+      fontSize: size ?? codeSize,
+      height: height,
+      color: color,
+    );
+    return kIsWeb ? GoogleFonts.robotoMono(textStyle: style) : style;
+  }
 
   Color get hairlineColor => scheme.outlineVariant;
 

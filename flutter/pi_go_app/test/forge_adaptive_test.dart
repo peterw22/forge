@@ -482,4 +482,61 @@ void main() {
       expect(tester.takeException(), isNull);
     });
   }
+
+  testWidgets('code indented with tabs keeps its indentation in a preview', (
+    tester,
+  ) async {
+    useWindow(tester, const Size(1100, 760));
+    final connection = AgentConnection()
+      ..receive(
+        jsonEncode({
+          'event': {
+            'type': 'tool_execution_start',
+            'toolCallId': 'write-1',
+            'toolName': 'write',
+            'arguments': {
+              'path': 'main.go',
+              'content': 'func main() {\n\tif ok {\n\t\trun()\n\t}\n}\n',
+            },
+          },
+        }),
+      );
+    await tester.pumpWidget(
+      MaterialApp(home: AgentPage(connection: connection)),
+    );
+    await tester.tap(find.byKey(const ValueKey('tool-panel-write-1')));
+    await tester.pump();
+
+    final code = tester.widget<SelectableText>(
+      find.byKey(const ValueKey('write-preview-code')),
+    );
+    expect(
+      code.textSpan!.toPlainText(),
+      'func main() {\n    if ok {\n        run()\n    }\n}\n',
+    );
+    // A tab after text advances to the next stop, not by a fixed amount.
+    connection.receive(
+      jsonEncode({
+        'event': {
+          'type': 'tool_execution_start',
+          'toolCallId': 'write-2',
+          'toolName': 'write',
+          'arguments': {'path': 'table.txt', 'content': 'ab\tc\nabcd\te'},
+        },
+      }),
+    );
+    await tester.pump();
+    await tester.tap(find.byKey(const ValueKey('tool-panel-write-1')));
+    await tester.tap(find.byKey(const ValueKey('tool-panel-write-2')));
+    await tester.pump();
+    expect(
+      tester
+          .widget<SelectableText>(
+            find.byKey(const ValueKey('write-preview-code')),
+          )
+          .textSpan!
+          .toPlainText(),
+      'ab  c\nabcd    e',
+    );
+  });
 }
