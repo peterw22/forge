@@ -16,6 +16,9 @@ const _databaseName = 'forge-device-identity';
 const _storeName = 'identity';
 const _privateKeyName = 'privateKey';
 const _deviceIDName = 'deviceId';
+// The identifier that every browser was given while random bytes stayed
+// empty under WebAssembly. An identity that has it is replaced.
+final _emptyDeviceID = 'A' * 24;
 
 _WebIdentityState? _cached;
 
@@ -29,9 +32,11 @@ Future<DeviceIdentity?> getSoftwareDeviceIdentity() async =>
     (await _loadOrCreate()).identity;
 
 Future<String> softwareIdentityRandomNonce() async {
-  final bytes = Uint8List(32);
-  web.window.crypto.getRandomValues(bytes.toJS);
-  return _base64Url(bytes);
+  // The browser fills an array of its own. Compiled to WebAssembly, a list of
+  // Dart is copied on its way to the browser, and would stay empty.
+  final bytes = Uint8List(32).toJS;
+  web.window.crypto.getRandomValues(bytes);
+  return _base64Url(bytes.toDart);
 }
 
 Future<String> signSoftwareDeviceIdentityPayload(String payload) async {
@@ -109,7 +114,8 @@ Future<_WebIdentityState> _loadOrCreate() async {
     if (privateKeyValue == null ||
         publicKeyValue == null ||
         deviceID == null ||
-        deviceID.isEmpty) {
+        deviceID.isEmpty ||
+        deviceID == _emptyDeviceID) {
       final generated = await web.window.crypto.subtle
           .generateKey(
             {'name': 'ECDSA', 'namedCurve': 'P-256'}.jsify()!,

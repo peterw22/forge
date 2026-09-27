@@ -32,6 +32,17 @@ void main() {
     );
   });
 
+  test('random values differ, compiled to JavaScript or WebAssembly', () async {
+    final first = await softwareIdentityRandomNonce();
+    final second = await softwareIdentityRandomNonce();
+    expect(first, hasLength(43));
+    expect(first, isNot('A' * 43));
+    expect(first, isNot(second));
+    final identity = await getSoftwareDeviceIdentity();
+    expect(identity?.deviceId, hasLength(24));
+    expect(identity?.deviceId, isNot('A' * 24));
+  });
+
   test('web transport rejects non-WSS endpoints', () async {
     await expectLater(
       connectWebSocketTransport('ws://example.com/ws'),
