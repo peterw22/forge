@@ -35,6 +35,7 @@ jobs:
   build:
     needs: test
     strategy:
+      fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
@@ -73,15 +74,22 @@ jobs:
           security set-keychain-settings -lut 3600 "$keychain"
           security unlock-keychain -p "$password" "$keychain"
           base64 --decode <<<"$MACOS_CERTIFICATE_P12" > "$RUNNER_TEMP/certificate.p12"
+          echo "The certificate file has $(wc -c < "$RUNNER_TEMP/certificate.p12" | tr -d ' ') bytes."
           security import "$RUNNER_TEMP/certificate.p12" -P "$MACOS_CERTIFICATE_PASSWORD" \
             -f pkcs12 -k "$keychain" -T /usr/bin/codesign
           rm "$RUNNER_TEMP/certificate.p12"
-          security set-key-partition-list -S apple-tool:,apple: -k "$password" "$keychain" >/dev/null
           security list-keychains -d user -s "$keychain" login.keychain-db
+          # An identity is a certificate together with its private key.
+          security find-identity -p codesigning "$keychain"
+          if ! security find-identity -p codesigning "$keychain" | grep -q 'Developer ID Application:'; then
+            echo "::error::MACOS_CERTIFICATE_P12 holds no Developer ID Application certificate with its private key."
+            exit 1
+          fi
+          security set-key-partition-list -S apple-tool:,apple: -k "$password" "$keychain" >/dev/null
           identity="$(security find-identity -v -p codesigning "$keychain" \
             | awk -F '"' '/Developer ID Application:/ { print $2; exit }')"
           if [[ -z "$identity" ]]; then
-            echo "::error::MACOS_CERTIFICATE_P12 holds no Developer ID Application certificate."
+            echo "::error::The Developer ID Application certificate is not valid on this machine."
             exit 1
           fi
           echo "SIGN_IDENTITY=$identity" >> "$GITHUB_ENV"
