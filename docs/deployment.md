@@ -8,7 +8,7 @@ The agent runs on its own. The clients and the relay, as they are in this reposi
 |---|---|---|
 | App identifier | `com.tingouw.forge` | Xcode projects, Android manifest and Gradle files, Flatpak manifest, entitlements, `worker-push/wrangler.toml` |
 | Apple team | `QJ6C3M6J85` | Xcode projects, `flutter/pi_go_app/macos/DeveloperIDExportOptions.plist`, `scripts/add-notification-extensions.rb` |
-| Push relay address | `https://forge-push.tingouw.com` | `cmd/pi-go-agent/push.go`, `flutter/pi_go_app/lib/push_identity.dart` |
+| Push relay address | `https://forge-push.tingouw.com` | Set `PI_GO_PUSH_RELAY_URL` for the agent and build the client with `--dart-define=FORGE_PUSH_RELAY_URL=…` |
 | Relay database | A D1 database ID | `worker-push/wrangler.toml` |
 | Firebase project | `forge-2aaf5` | `worker-push/wrangler.toml` |
 | Download sites | `forge-app.tingouw.com`, `forge.tingouw.com` | `s3/` |
@@ -38,7 +38,7 @@ This contacts no service of the maintainer. Notifications are off.
 
 ## The relay
 
-See [`worker-push/README.md`](../worker-push/README.md). Point the agent at it with `PI_GO_PUSH_RELAY_URL`, and change `pushRelayBaseURL` in the client.
+See [`worker-push/README.md`](../worker-push/README.md). Point the agent at it with `PI_GO_PUSH_RELAY_URL`, and build the client with `--dart-define=FORGE_PUSH_RELAY_URL=https://your-relay`. An empty value builds a client without push.
 
 A push service delivers only to apps signed by the account that owns the push credentials. Your relay therefore needs your build of the clients.
 

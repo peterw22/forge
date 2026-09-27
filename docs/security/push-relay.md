@@ -155,7 +155,7 @@ Responses are sent with `Cache-Control: no-store`. Errors have the form:
 
 ## Running your own
 
-The agent uses `https://forge-push.tingouw.com` unless `PI_GO_PUSH_RELAY_URL` names another relay. `PI_GO_PUSH_DISABLED=true` turns push off. The relay address in Forge is the constant `pushRelayBaseURL` in `flutter/pi_go_app/lib/push_identity.dart`.
+The agent uses `https://forge-push.tingouw.com` unless `PI_GO_PUSH_RELAY_URL` names another relay. `PI_GO_PUSH_DISABLED=true` turns push off. The client takes its relay from the build setting `FORGE_PUSH_RELAY_URL`; an empty value builds a client without push.
 
 Deployment is described in [`worker-push/README.md`](../../worker-push/README.md). A push service only accepts notifications for apps signed by the account that owns the credentials, so your own relay needs your own build of Forge.
 

@@ -5,7 +5,13 @@ import 'device_identity.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 
-const pushRelayBaseURL = 'https://forge-push.tingouw.com';
+/// The relay that delivers notifications. A build can name its own with
+/// `--dart-define=FORGE_PUSH_RELAY_URL=https://…`, or pass an empty value to
+/// build without push.
+const pushRelayBaseURL = String.fromEnvironment(
+  'FORGE_PUSH_RELAY_URL',
+  defaultValue: 'https://forge-push.tingouw.com',
+);
 const _pushIdentityChannel = MethodChannel('com.tingouw.forge/push_identity');
 const _pushIdentityEvents = EventChannel(
   'com.tingouw.forge/push_identity_events',
@@ -21,6 +27,7 @@ bool get deviceIdentitySupported =>
 bool get deviceIdentityExportSupported => deviceIdentitySupported;
 
 bool get pushSupported =>
+    pushRelayBaseURL.isNotEmpty &&
     !kIsWeb &&
     (defaultTargetPlatform == TargetPlatform.iOS ||
         defaultTargetPlatform == TargetPlatform.android ||
