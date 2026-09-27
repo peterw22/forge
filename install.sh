@@ -30,6 +30,8 @@ PORT=""
 WORKSPACE=""
 TUNNEL=""
 TUNNEL_HOSTNAME=""
+# The name of a named tunnel in the Cloudflare account. See prepare_named_tunnel.
+TUNNEL_NAME="${FORGE_TUNNEL:-}"
 DEVICE_FILE=""
 LINGER=""
 ASSUME_YES=0
@@ -60,7 +62,8 @@ Installs pi-go-agent as a service of the current user.
   --help                 Show this.
 
 Environment: FORGE_BIN_DIR (default ~/.local/bin), PI_GO_CONFIG_DIR (default
-~/.pi-go), FORGE_SERVICE (default forge-agent).
+~/.pi-go), FORGE_SERVICE (default forge-agent), FORGE_TUNNEL (the name of a
+named tunnel; default forge-agent-<name of this machine>).
 EOF
 }
 
@@ -485,20 +488,46 @@ authorize_devices() {
 
 # ---------------------------------------------------------------- tunnel
 
+# The name of this machine, in the letters that the name of a tunnel takes.
+machine_name() {
+  local name
+  name="$(hostname -s 2>/dev/null || hostname 2>/dev/null || true)"
+  name="$(printf '%s' "$name" | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9-' '-' |
+    sed -e 's/--*/-/g' -e 's/^-//' -e 's/-$//')"
+  printf '%s' "${name:-machine}"
+}
+
+# Prints the identifier of the tunnel of a name, or nothing.
+tunnel_id() {
+  cloudflared tunnel list --name "$1" --output json 2>/dev/null |
+    grep -Eo '"id": *"[0-9a-f-]{36}"' | awk -F '"' 'NR == 1 { print $4 }'
+}
+
+# An account has one tunnel of a name, and a tunnel serves the machine that
+# holds its credentials. Each machine therefore gets a tunnel named after it.
+# A tunnel that an earlier installation made here, under the name of the
+# service, is kept.
 prepare_named_tunnel() {
   local id
   step "Setting up the tunnel to $TUNNEL_HOSTNAME"
-  id="$(cloudflared tunnel list --name "$SERVICE" --output json 2>/dev/null |
-    grep -Eo '"id": *"[0-9a-f-]{36}"' | awk -F '"' 'NR == 1 { print $4 }')" || true
-  if [ -z "$id" ]; then
-    cloudflared tunnel create "$SERVICE"
-    id="$(cloudflared tunnel list --name "$SERVICE" --output json |
-      grep -Eo '"id": *"[0-9a-f-]{36}"' | awk -F '"' 'NR == 1 { print $4 }')" || true
+  if [ -z "$TUNNEL_NAME" ]; then
+    id="$(tunnel_id "$SERVICE")" || true
+    if [ -n "$id" ] && [ -f "$HOME/.cloudflared/$id.json" ]; then
+      TUNNEL_NAME="$SERVICE"
+    else
+      TUNNEL_NAME="$SERVICE-$(machine_name)"
+    fi
   fi
-  [ -n "$id" ] || fail "The tunnel $SERVICE could not be created."
+  id="$(tunnel_id "$TUNNEL_NAME")" || true
+  if [ -z "$id" ]; then
+    cloudflared tunnel create "$TUNNEL_NAME"
+    id="$(tunnel_id "$TUNNEL_NAME")" || true
+  fi
+  [ -n "$id" ] || fail "The tunnel $TUNNEL_NAME could not be created."
+  # Deleting the tunnel is not advised: it would cut off the machine it serves.
   [ -f "$HOME/.cloudflared/$id.json" ] ||
-    fail "The tunnel $SERVICE belongs to another machine: its credentials, $id.json, are not in ~/.cloudflared. Delete it with \"cloudflared tunnel delete $SERVICE\", or set FORGE_SERVICE to another name."
-  cloudflared tunnel route dns "$SERVICE" "$TUNNEL_HOSTNAME" ||
+    fail "The tunnel $TUNNEL_NAME belongs to another machine: its credentials, $id.json, are not in ~/.cloudflared. Set FORGE_TUNNEL to another name. \"cloudflared tunnel info $TUNNEL_NAME\" shows which machine uses it."
+  cloudflared tunnel route dns "$TUNNEL_NAME" "$TUNNEL_HOSTNAME" ||
     fail "$TUNNEL_HOSTNAME could not be pointed at the tunnel. If the name has a DNS record already, remove it in the Cloudflare dashboard."
 }
 
@@ -517,7 +546,7 @@ tunnel_arguments() {
   [ "$target" = 0.0.0.0 ] && target=127.0.0.1
   TUNNEL_ARGUMENTS=("$(command -v cloudflared)" tunnel --no-autoupdate)
   if [ "$TUNNEL" = named ]; then
-    TUNNEL_ARGUMENTS+=(run --url "http://$target:$PORT" "$SERVICE")
+    TUNNEL_ARGUMENTS+=(run --url "http://$target:$PORT" "$TUNNEL_NAME")
   else
     TUNNEL_ARGUMENTS+=(--url "http://$target:$PORT")
   fi
@@ -842,7 +871,22 @@ update() {
 
 # ---------------------------------------------------------------- uninstall
 
+# Prints the name of the named tunnel that the tunnel service runs, if it
+# runs one.
+installed_tunnel() {
+  local file
+  file="$(service_file | sed -e "s|$SERVICE\.|$SERVICE-tunnel.|")"
+  [ -f "$file" ] || return 0
+  if [ "$OS" = linux ]; then
+    sed -n 's/^ExecStart=.* run --url [^ ]* "\{0,1\}\([A-Za-z0-9._-]*\)"\{0,1\}$/\1/p' "$file"
+  else
+    awk -F '[<>]' '/<string>run<\/string>/ { named = 1 } named && /<string>http/ { getline; print $3; exit }' "$file"
+  fi
+}
+
 uninstall() {
+  local tunnel
+  tunnel="$(installed_tunnel)" || true
   step "Removing the Forge agent"
   if [ "$OS" = linux ]; then
     prepare_systemd
@@ -858,8 +902,8 @@ uninstall() {
   rm -f "$BIN"
   say "The services and $BIN are removed."
   say "Kept: $CONFIG_DIR, with the keys of the agent, its devices and its logs."
-  if command -v cloudflared >/dev/null 2>&1 && [ -f "$HOME/.cloudflared/cert.pem" ]; then
-    say "A named tunnel stays in your Cloudflare account. To delete it: cloudflared tunnel delete $SERVICE"
+  if [ -n "$tunnel" ]; then
+    say "The tunnel $tunnel stays in your Cloudflare account. To delete it: cloudflared tunnel delete $tunnel"
   fi
 }
 
@@ -905,5 +949,6 @@ main() {
   summary
 }
 
-# The script runs only once it has arrived whole.
-main "$@"
+# The script runs only once it has arrived whole. A test reads its functions
+# without running it.
+[ "${FORGE_INSTALL_LIBRARY:-}" = 1 ] || main "$@"

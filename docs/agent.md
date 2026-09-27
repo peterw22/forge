@@ -66,6 +66,8 @@ Forge in a browser requires a `wss://` address. Where `cloudflared` is installed
 
 A tunnel makes the agent reachable from the internet. Only a device that is listed passes the handshake, but read [the internet](#the-internet) first. The named tunnel has been tested against a stand-in for `cloudflared` only.
 
+A named tunnel is called `forge-agent-<name of the machine>` in your Cloudflare account, so that each machine of one account has its own. `FORGE_TUNNEL` names it otherwise. A tunnel serves the machine that holds its credentials: deleting one that another machine made cuts that machine off. `cloudflared tunnel info <name>` shows which machine is connected.
+
 ### Without questions
 
 ```bash

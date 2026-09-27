@@ -154,4 +154,76 @@ if "$ROOT/install.sh" --yes --binary "$TEST/pi-go-agent" --port "$PORT" \
 fi
 kill "$other"
 check "a port that another program holds fails the installation"
+
+# A named tunnel. cloudflared is replaced by a program that keeps an account
+# in a directory: one file for each tunnel, named after it, with its identifier.
+ACCOUNT="$TEST/account"
+mkdir -p "$ACCOUNT" "$TEST/stub" "$TEST/home/.cloudflared"
+: >"$TEST/home/.cloudflared/cert.pem"
+cat >"$TEST/stub/cloudflared" <<'STUB'
+#!/usr/bin/env bash
+set -euo pipefail
+[ "$1" = tunnel ]
+case "$2" in
+  list)
+    if [ -f "$ACCOUNT/$4" ]; then
+      printf '[{"id": "%s", "name": "%s"}]\n' "$(cat "$ACCOUNT/$4")" "$4"
+    else
+      echo '[]'
+    fi
+    ;;
+  create)
+    id="$(printf '00000000-0000-4000-8000-%012d' "$(ls "$ACCOUNT" | wc -l)")"
+    echo "$id" >"$ACCOUNT/$3"
+    : >"$HOME/.cloudflared/$id.json"
+    ;;
+  route)
+    echo "$4 $5" >>"$ACCOUNT.routes"
+    ;;
+  *)
+    exit 1
+    ;;
+esac
+STUB
+chmod +x "$TEST/stub/cloudflared"
+# Prints the name of the tunnel that an installation on this machine takes.
+tunnel_of() {
+  (
+    export ACCOUNT HOME="$TEST/home" PATH="$TEST/stub:$PATH" FORGE_INSTALL_LIBRARY=1
+    # shellcheck source=/dev/null
+    . "$ROOT/install.sh"
+    TUNNEL_HOSTNAME=agent.example.com
+    prepare_named_tunnel >/dev/null
+    echo "$TUNNEL_NAME"
+  )
+}
+
+# Another machine of the account has the tunnel that is named after the
+# service. It is not used, and not touched.
+echo "11111111-1111-4111-8111-111111111111" >"$ACCOUNT/$FORGE_SERVICE"
+name="$(tunnel_of)"
+[ "$name" != "$FORGE_SERVICE" ]
+case "$name" in "$FORGE_SERVICE"-?*) ;; *) exit 1 ;; esac
+[ "$(cat "$ACCOUNT/$FORGE_SERVICE")" = "11111111-1111-4111-8111-111111111111" ]
+[ -f "$TEST/home/.cloudflared/$(cat "$ACCOUNT/$name").json" ]
+grep -qx "$name agent.example.com" "$ACCOUNT.routes"
+check "a second machine of an account gets a tunnel of its own"
+
+[ "$(tunnel_of)" = "$name" ]
+[ "$(ls "$ACCOUNT" | wc -l)" -eq 2 ]
+check "a second installation keeps the tunnel of the first"
+
+# A tunnel that an earlier version made here, named after the service.
+: >"$TEST/home/.cloudflared/11111111-1111-4111-8111-111111111111.json"
+[ "$(tunnel_of)" = "$FORGE_SERVICE" ]
+check "a tunnel of an earlier installation on this machine is kept"
+rm "$TEST/home/.cloudflared/11111111-1111-4111-8111-111111111111.json"
+
+if message="$(FORGE_TUNNEL="$FORGE_SERVICE" tunnel_of 2>&1)"; then
+  echo "the tunnel of another machine was taken" >&2
+  exit 1
+fi
+case "$message" in *FORGE_TUNNEL*) ;; *) exit 1 ;; esac
+case "$message" in *"tunnel delete"*) exit 1 ;; *) ;; esac
+check "the tunnel of another machine is refused, and its deletion is not advised"
 echo "All checks passed."
