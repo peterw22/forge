@@ -9,7 +9,7 @@
   <key>signingStyle</key>
   <string>manual</string>
   <key>teamID</key>
-  <string>QJ6C3M6J85</string>
+  <string>YOUR_TEAM_ID</string>
   <key>signingCertificate</key>
   <string>Apple Distribution</string>
   <key>stripSwiftSymbols</key>
@@ -19,9 +19,9 @@
   <key>provisioningProfiles</key>
   <dict>
     <key>com.tingouw.forge</key>
-    <string>23Care</string>
+    <string>Your Ad Hoc profile name</string>
     <key>com.tingouw.forge.notification-service</key>
-    <string>23Care Push</string>
+    <string>Your Ad Hoc extension profile name</string>
   </dict>
 </dict>
 </plist>

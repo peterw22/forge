@@ -122,7 +122,7 @@ if [[ "$SIGN_KIND" == "developer-id" ]]; then
   rm -rf "$ARCHIVE/Products/Applications/Forge.app"
   ditto "$SOURCE_APP" "$ARCHIVE/Products/Applications/Forge.app"
   plutil -replace ApplicationProperties.SigningIdentity -string "$SIGN_IDENTITY" "$ARCHIVE/Info.plist"
-  plutil -replace ApplicationProperties.Team -string QJ6C3M6J85 "$ARCHIVE/Info.plist"
+  plutil -replace ApplicationProperties.Team -string "${TEAM_ID:-QJ6C3M6J85}" "$ARCHIVE/Info.plist"
   xcodebuild -exportArchive -archivePath "$ARCHIVE" -exportPath "$EXPORT" \
     -exportOptionsPlist "$APP_ROOT/macos/DeveloperIDExportOptions.plist" \
     -allowProvisioningUpdates >/dev/null

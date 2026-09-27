@@ -50,3 +50,6 @@ firebase-service-account*.json
 /flutter/pi_go_app/macos/build/
 /s3/ios/*.ipa
 
+# Signing details of one deployment (team, profile names, device UDIDs)
+/s3/AdHocExportOptions.plist
+/s3/deploy.local.env

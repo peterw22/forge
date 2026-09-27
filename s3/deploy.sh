@@ -4,12 +4,28 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 APP_ROOT="$ROOT/flutter/pi_go_app"
 S3_ROOT="$ROOT/s3"
+# Signing details of one deployment live in an untracked file; see README.md.
+if [[ -f "$S3_ROOT/deploy.local.env" ]]; then
+  # shellcheck source=/dev/null
+  source "$S3_ROOT/deploy.local.env"
+fi
 BUCKET="${R2_BUCKET:-forge-app}"
 PUBLIC_ORIGIN="${PUBLIC_ORIGIN:-https://forge-app.tingouw.com}"
 BUILD_NAME="${BUILD_NAME:-1.0.0}"
 BUILD_NUMBER="${BUILD_NUMBER:-13}"
 WRANGLER_DIR="$ROOT/worker-push"
-EXPECTED_ADHOC_DEVICE_COUNT="${EXPECTED_ADHOC_DEVICE_COUNT:-2}"
+TEAM_ID="${TEAM_ID:-QJ6C3M6J85}"
+BUNDLE_ID="${BUNDLE_ID:-com.tingouw.forge}"
+EXPORT_OPTIONS="${EXPORT_OPTIONS:-$S3_ROOT/AdHocExportOptions.plist}"
+# Optional checks of the Ad Hoc profile: how many devices it must hold and
+# which UDIDs (separated by spaces or commas) must be among them.
+EXPECTED_ADHOC_DEVICE_COUNT="${EXPECTED_ADHOC_DEVICE_COUNT:-}"
+REQUIRED_ADHOC_DEVICES="${REQUIRED_ADHOC_DEVICES:-}"
+
+if [[ ! -f "$EXPORT_OPTIONS" ]]; then
+  echo "Missing $EXPORT_OPTIONS; copy AdHocExportOptions.example.plist and fill it in" >&2
+  exit 1
+fi
 
 if [[ -z "${DEVELOPER_DIR:-}" && -x /Applications/Xcode.app/Contents/Developer/usr/bin/xcodebuild ]]; then
   export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
@@ -17,7 +33,7 @@ fi
 
 cd "$APP_ROOT"
 flutter build ipa --release \
-  --export-options-plist "$S3_ROOT/AdHocExportOptions.plist" \
+  --export-options-plist "$EXPORT_OPTIONS" \
   --build-name "$BUILD_NAME" --build-number "$BUILD_NUMBER"
 
 IPA_SOURCE="$(find build/ios/ipa -maxdepth 1 -name '*.ipa' -print -quit)"
@@ -41,30 +57,29 @@ codesign --verify --deep --strict "$APP"
 codesign -d --entitlements :- "$APP" 2>/dev/null > "$VERIFY_DIR/app-entitlements.plist"
 codesign -d --entitlements :- "$EXTENSION" 2>/dev/null > "$VERIFY_DIR/extension-entitlements.plist"
 test "$(plutil -extract aps-environment raw -o - "$VERIFY_DIR/app-entitlements.plist")" = production
-test "$(plutil -extract application-identifier raw -o - "$VERIFY_DIR/app-entitlements.plist")" = QJ6C3M6J85.com.tingouw.forge
-test "$(plutil -extract application-identifier raw -o - "$VERIFY_DIR/extension-entitlements.plist")" = QJ6C3M6J85.com.tingouw.forge.notification-service
-/usr/libexec/PlistBuddy -c 'Print :keychain-access-groups:0' "$VERIFY_DIR/app-entitlements.plist"   | grep -qx 'QJ6C3M6J85.com.tingouw.forge.push-content'
-/usr/libexec/PlistBuddy -c 'Print :keychain-access-groups:0' "$VERIFY_DIR/extension-entitlements.plist"   | grep -qx 'QJ6C3M6J85.com.tingouw.forge.push-content'
+test "$(plutil -extract application-identifier raw -o - "$VERIFY_DIR/app-entitlements.plist")" = "$TEAM_ID.$BUNDLE_ID"
+test "$(plutil -extract application-identifier raw -o - "$VERIFY_DIR/extension-entitlements.plist")" = "$TEAM_ID.$BUNDLE_ID.notification-service"
+/usr/libexec/PlistBuddy -c 'Print :keychain-access-groups:0' "$VERIFY_DIR/app-entitlements.plist"   | grep -qx "$TEAM_ID.$BUNDLE_ID.push-content"
+/usr/libexec/PlistBuddy -c 'Print :keychain-access-groups:0' "$VERIFY_DIR/extension-entitlements.plist"   | grep -qx "$TEAM_ID.$BUNDLE_ID.push-content"
 test "$(plutil -extract CFBundleVersion raw -o - "$APP/Info.plist")" = "$BUILD_NUMBER"
 test "$(plutil -extract CFBundleVersion raw -o - "$EXTENSION/Info.plist")" = "$BUILD_NUMBER"
 security cms -D -i "$APP/embedded.mobileprovision" > "$VERIFY_DIR/app-profile.plist"
 security cms -D -i "$EXTENSION/embedded.mobileprovision" > "$VERIFY_DIR/extension-profile.plist"
-python3 - "$VERIFY_DIR/app-profile.plist" "$VERIFY_DIR/extension-profile.plist" "$EXPECTED_ADHOC_DEVICE_COUNT" <<'PYPROFILE'
+python3 - "$VERIFY_DIR/app-profile.plist" "$VERIFY_DIR/extension-profile.plist" "$EXPECTED_ADHOC_DEVICE_COUNT" "$REQUIRED_ADHOC_DEVICES" <<'PYPROFILE'
 import plistlib, sys
-app_path, extension_path, expected_text = sys.argv[1:]
-expected = int(expected_text)
+app_path, extension_path, expected_text, required_text = sys.argv[1:]
 with open(app_path, 'rb') as handle:
     app_devices = set(plistlib.load(handle).get('ProvisionedDevices', []))
 with open(extension_path, 'rb') as handle:
     extension_devices = set(plistlib.load(handle).get('ProvisionedDevices', []))
-required = '00008130-000145580C51001C'
-if required not in app_devices or required not in extension_devices:
-    raise SystemExit('PeterW_iPhone is absent from an Ad Hoc profile')
 if app_devices != extension_devices:
     raise SystemExit(f'app and extension Ad Hoc device sets differ: {sorted(app_devices)} / {sorted(extension_devices)}')
-if len(app_devices) != expected:
-    raise SystemExit(f'expected {expected} Ad Hoc devices, found {len(app_devices)}: {sorted(app_devices)}')
-print(f'Verified {expected} Ad Hoc devices: {sorted(app_devices)}')
+missing = sorted(set(required_text.replace(',', ' ').split()) - app_devices)
+if missing:
+    raise SystemExit(f'required devices are absent from the Ad Hoc profile: {missing}')
+if expected_text and len(app_devices) != int(expected_text):
+    raise SystemExit(f'expected {expected_text} Ad Hoc devices, found {len(app_devices)}: {sorted(app_devices)}')
+print(f'Verified {len(app_devices)} Ad Hoc devices: {sorted(app_devices)}')
 PYPROFILE
 
 python3 - "$S3_ROOT/manifest.plist" "$PUBLIC_ORIGIN" "$BUILD_NUMBER" <<'PY'
