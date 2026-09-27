@@ -157,7 +157,8 @@ void main() {
     expect(find.byIcon(Icons.tune), findsOneWidget);
     expect(find.byIcon(Icons.rocket_launch_outlined), findsOneWidget);
     expect(find.byIcon(Icons.account_tree_outlined), findsOneWidget);
-    expect(find.byIcon(Icons.folder_outlined), findsOneWidget);
+    // A session's directory is chosen when it starts, not from the header.
+    expect(find.byIcon(Icons.folder_outlined), findsNothing);
     expect(find.byIcon(Icons.link_off), findsOneWidget);
     expect(
       tester

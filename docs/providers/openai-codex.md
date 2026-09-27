@@ -28,7 +28,7 @@ Each session keeps one WebSocket to the service across tool calls and later prom
 
 The safety classifier and compaction use separate one-shot requests, so they cannot disturb a session's continuation.
 
-Forge shows the transport in use as `upstream` in the header.
+Forge shows the transport in use as `upstream` in the header: `WS` or `SSE`. For Claude Code and Antigravity, which connect to the model themselves, it shows `Claude` or `Agy`.
 
 ## Thinking
 

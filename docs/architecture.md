@@ -81,6 +81,7 @@ A session is an append-only file of JSON lines in `<workspace>/.pi-go/sessions/`
 - Several clients can attach to one session. They see the same stream, and a client that reconnects is caught up.
 - Different clients can run different sessions at the same time.
 - Starting the agent does not create a session file. The first prompt does.
+- Each session works in its own directory, chosen when it starts and kept in its file.
 
 ### Compaction
 
@@ -107,7 +108,7 @@ The agent and its clients exchange JSON messages, one per line or WebSocket fram
 
 | Direction | Examples |
 |---|---|
-| Client to agent | `prompt`, `abort`, `get_state`, `switch_session`, `new_session`, `list_sessions`, `set_model`, `approval_response` |
+| Client to agent | `prompt`, `abort`, `get_state`, `switch_session`, `new_session`, `list_sessions`, `list_directories`, `set_model`, `approval_response` |
 | Agent to client | Responses to commands, and events such as `agent_start`, `message_update`, `tool_execution_start`, `tool_execution_end`, `approval_required`, `agent_end` |
 
 On a network listener every message after the handshake is encrypted. See [device authentication](security/device-authentication.md#session-encryption).

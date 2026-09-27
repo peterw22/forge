@@ -117,8 +117,12 @@ class SessionItem {
     required this.lastMessageTime,
     required this.active,
     required this.waitingInput,
+    this.cwd = '',
   });
   final String id, summary;
+
+  /// The directory on the agent's machine that the session works in.
+  final String cwd;
   final DateTime? lastMessageTime;
   final bool active, waitingInput;
 }
@@ -132,6 +136,22 @@ class SessionPage {
   final List<SessionItem> sessions;
   final int nextOffset;
   final bool hasMore;
+}
+
+/// The directories inside one directory on the agent's machine.
+class DirectoryListing {
+  const DirectoryListing({
+    required this.path,
+    required this.parent,
+    required this.home,
+    required this.directories,
+    required this.cut,
+  });
+  final String path, parent, home;
+  final List<String> directories;
+
+  /// The directory holds more than the agent lists at once.
+  final bool cut;
 }
 
 class ApprovalRequest {
@@ -298,6 +318,14 @@ class AgentConnection extends ChangeNotifier {
   int _reportedContextWindow = 0;
   String _reportedContextWindowModel = '';
   String upstreamTransport = '—';
+
+  /// How the agent reaches the model. A command line provider owns its
+  /// connection and reports no transport, so it is named itself.
+  String get upstream => currentModel.startsWith('claude/')
+      ? 'Claude'
+      : currentModel.startsWith('agy/')
+      ? 'Agy'
+      : upstreamTransport;
   String currentModel = 'gpt-5.6-terra';
 
   /// The provider-reported window for the current model, else a default.
@@ -359,8 +387,14 @@ class AgentConnection extends ChangeNotifier {
   onAuthenticationMessage;
   void Function(AgentConnection connection, Map<String, dynamic> response)?
   onPushResponse;
-  void Function(AgentConnection connection)? onTranscriptLoaded;
+
+  /// Called when a session's transcript arrives. [startUp] is true for the
+  /// session the app opens with, and false for one the user switched to or
+  /// created.
+  void Function(AgentConnection connection, bool startUp)? onTranscriptLoaded;
+  bool _restoringSession = false;
   Completer<SessionPage>? _sessionRequest;
+  Completer<DirectoryListing>? _directoryRequest;
   Completer<List<Map<String, dynamic>>>? _pushAuthorizationRequest;
   Completer<void>? _pushAuthorizationRevokeRequest;
   int _historyBefore = 0;
@@ -460,6 +494,7 @@ class AgentConnection extends ChangeNotifier {
     final sessionToRestore = _sessionToRestore;
     _sessionToRestore = null;
     if (sessionToRestore != null && sessionToRestore.isNotEmpty) {
+      _restoringSession = true;
       send({
         'id': 'flutter-reconnect-session',
         'type': 'switch_session',
@@ -491,6 +526,9 @@ class AgentConnection extends ChangeNotifier {
     _encryptionRequired = false;
     unawaited(transport?.close());
     streaming = false;
+    _restoringSession = false;
+    _directoryRequest?.completeError(StateError('Connection closed'));
+    _directoryRequest = null;
     _stopRunningTools();
     pendingApproval = null;
     _pushAuthorizationRequest?.completeError(
@@ -526,6 +564,9 @@ class AgentConnection extends ChangeNotifier {
     _encryptionRequired = false;
     await transport?.close();
     streaming = false;
+    _restoringSession = false;
+    _directoryRequest?.completeError(StateError('Connection closed'));
+    _directoryRequest = null;
     _stopRunningTools();
     pendingApproval = null;
     _pushAuthorizationRequest?.completeError(StateError('Connection closed'));
@@ -818,10 +859,29 @@ class AgentConnection extends ChangeNotifier {
     return request.future.timeout(const Duration(seconds: 5));
   }
 
-  void newSession() {
+  /// Creates a session that works in [cwd], or where this one does.
+  void newSession({String cwd = ''}) {
     status = 'creating session…';
     notifyListeners();
-    send({'id': 'flutter-new-session', 'type': 'new_session'});
+    send({
+      'id': 'flutter-new-session',
+      'type': 'new_session',
+      if (cwd.isNotEmpty) 'cwd': cwd,
+    });
+  }
+
+  /// Lists the directories inside [directory] on the agent's machine, or
+  /// inside the session's working directory.
+  Future<DirectoryListing> listDirectories([String directory = '']) {
+    if (!connected) return Future.error(StateError('Agent is not connected'));
+    final request = Completer<DirectoryListing>();
+    _directoryRequest = request;
+    send({
+      'id': 'flutter-directories-${DateTime.now().microsecondsSinceEpoch}',
+      'type': 'list_directories',
+      if (directory.isNotEmpty) 'directory': directory,
+    });
+    return request.future.timeout(const Duration(seconds: 10));
   }
 
   void loadOlderTranscript() {
@@ -848,6 +908,16 @@ class AgentConnection extends ChangeNotifier {
       'type': 'switch_session',
       'session': id,
     });
+  }
+
+  /// Attaches [transport] as a local connection that has authenticated, and
+  /// returns to the session this connection was in.
+  @visibleForTesting
+  Future<void> attachTransport(AgentTransport transport) {
+    endpointKind = ConnectionKind.local;
+    _sessionToRestore = currentSession;
+    _transport = transport;
+    return _finishAttach();
   }
 
   @visibleForTesting
@@ -1079,6 +1149,29 @@ class AgentConnection extends ChangeNotifier {
           _sessionRequest?.completeError(error);
           _sessionRequest = null;
         }
+        if (response['command'] == 'list_directories' &&
+            _directoryRequest != null) {
+          _directoryRequest?.completeError(error);
+          _directoryRequest = null;
+        }
+        if (response['command'] == 'switch_session') _restoringSession = false;
+      }
+      if (response['command'] == 'list_directories' &&
+          response['error'] == null &&
+          _directoryRequest != null) {
+        _directoryRequest?.complete(
+          DirectoryListing(
+            path: '${response['directory'] ?? ''}',
+            parent: '${response['parent'] ?? ''}',
+            home: '${response['home'] ?? ''}',
+            directories: [
+              for (final name in response['directories'] as List? ?? const [])
+                '$name',
+            ],
+            cut: response['directoriesCut'] == true,
+          ),
+        );
+        _directoryRequest = null;
       }
       if (response['command'] == 'list_sessions' &&
           response['error'] == null &&
@@ -1099,6 +1192,7 @@ class AgentConnection extends ChangeNotifier {
               waitingInput: sessionsWaitingInput.contains(
                 '${value['id'] ?? ''}',
               ),
+              cwd: '${value['cwd'] ?? ''}',
             ),
           );
         }
@@ -1155,7 +1249,17 @@ class AgentConnection extends ChangeNotifier {
           'switch_session',
           'new_session',
         }.contains(response['command'])) {
-          onTranscriptLoaded?.call(this);
+          // The agent first sends the session it attaches a client to. When
+          // the app is returning to another session, that one is the start.
+          final startUp = switch (response['command']) {
+            'get_state' => !_restoringSession,
+            'switch_session' => _restoringSession,
+            _ => false,
+          };
+          if (response['command'] == 'switch_session') {
+            _restoringSession = false;
+          }
+          onTranscriptLoaded?.call(this, startUp);
         }
         if (response['command'] == 'switch_session') {
           status = 'session switched';
@@ -1705,6 +1809,8 @@ class _AgentPageState extends State<AgentPage> with WidgetsBindingObserver {
   final Map<AgentConnection, String> _authClientNonces = {};
   final Map<AgentConnection, ClientSecureSession> _authEphemeralSessions = {};
   bool _serverTrustDialogOpen = false;
+  bool _directoryChooserOpen = false;
+  final Set<String> _directoryOffered = {};
 
   @override
   void initState() {
@@ -1765,7 +1871,10 @@ class _AgentPageState extends State<AgentPage> with WidgetsBindingObserver {
     };
     connection.onAuthenticationMessage = _handleAuthenticationMessage;
     connection.onPushResponse = _handlePushResponse;
-    connection.onTranscriptLoaded = (_) => _resetTranscriptScroll();
+    connection.onTranscriptLoaded = (connection, startUp) {
+      _resetTranscriptScroll();
+      if (startUp) _offerWorkingDirectory(connection);
+    };
     connection.onHistoryPrepended = (_) => _preserveScrollAfterHistory();
     connection.onDisconnected = (connection) {
       _authClientNonces.remove(connection);
@@ -4187,42 +4296,259 @@ class _AgentPageState extends State<AgentPage> with WidgetsBindingObserver {
     }
   }
 
-  Future<void> _showWorkspace() async {
-    final controller = TextEditingController(text: agent.currentCWD);
-    final selected = await showForgeSheet<String>(
+  /// The end of [path], which says more about a directory than its start.
+  String _shortPath(String path, [int length = 36]) {
+    if (path.length <= length) return path;
+    final parts = path.split('/');
+    var short = parts.removeLast();
+    while (parts.isNotEmpty &&
+        short.length + parts.last.length + 1 <= length - 2) {
+      short = '${parts.removeLast()}/$short';
+    }
+    return '…/$short';
+  }
+
+  /// Lets the user choose a directory on the agent's machine. Returns null
+  /// when the user cancels, and an empty path when the agent cannot list
+  /// directories, so that the caller keeps the directory it has.
+  Future<String?> _chooseDirectory({
+    required String title,
+    String start = '',
+  }) async {
+    if (_directoryChooserOpen) return null;
+    final connection = agent;
+    DirectoryListing listing;
+    try {
+      try {
+        listing = await connection.listDirectories(start);
+      } on TimeoutException {
+        rethrow;
+      } catch (_) {
+        // The directory may be gone; start from the top instead.
+        listing = await connection.listDirectories('/');
+      }
+    } catch (error) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Could not list directories: $error')),
+        );
+      }
+      return '';
+    }
+    if (!mounted) return null;
+    _directoryChooserOpen = true;
+    var loading = false;
+    var showHidden = false;
+    String? problem;
+    final chosen = await showForgeSheet<String>(
       context: context,
-      builder: (context) => ForgeSheet(
-        title: 'Agent working directory',
-        icon: Icons.folder_outlined,
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('Cancel'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.pop(context, controller.text.trim()),
-            child: const Text('Use directory'),
-          ),
-        ],
-        child: TextField(
-          controller: controller,
-          autofocus: true,
-          autocorrect: false,
-          style: ForgeStyle.of(context).mono(
-            size: ForgeStyle.of(context).touch ? 15 : 13,
-            color: Theme.of(context).colorScheme.onSurface,
-          ),
-          decoration: const InputDecoration(
-            labelText: 'Absolute directory on the agent server',
-          ),
-          onSubmitted: (value) => Navigator.pop(context, value.trim()),
-        ),
+      builder: (sheetContext) => StatefulBuilder(
+        builder: (context, setSheetState) {
+          final theme = Theme.of(context);
+          final style = ForgeStyle.of(context);
+          Future<void> open(String path) async {
+            if (loading || path.isEmpty) return;
+            setSheetState(() {
+              loading = true;
+              problem = null;
+            });
+            try {
+              final next = await connection.listDirectories(path);
+              if (!sheetContext.mounted) return;
+              setSheetState(() {
+                listing = next;
+                loading = false;
+              });
+            } catch (error) {
+              if (!sheetContext.mounted) return;
+              setSheetState(() {
+                loading = false;
+                problem = '$error';
+              });
+            }
+          }
+
+          final names = [
+            for (final name in listing.directories)
+              if (showHidden || !name.startsWith('.')) name,
+          ];
+          return ForgeSheet(
+            title: title,
+            icon: Icons.folder_outlined,
+            height: 420,
+            padded: false,
+            titleActions: [
+              IconButton(
+                tooltip: showHidden
+                    ? 'Hide hidden directories'
+                    : 'Show hidden directories',
+                onPressed: () => setSheetState(() => showHidden = !showHidden),
+                icon: Icon(
+                  showHidden
+                      ? Icons.visibility_outlined
+                      : Icons.visibility_off_outlined,
+                ),
+              ),
+            ],
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(sheetContext),
+                child: const Text('Cancel'),
+              ),
+              FilledButton(
+                onPressed: loading
+                    ? null
+                    : () => Navigator.pop(sheetContext, listing.path),
+                child: const Text('Use this directory'),
+              ),
+            ],
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(12, 0, 20, 8),
+                  child: Row(
+                    children: [
+                      IconButton(
+                        tooltip: 'Parent directory',
+                        onPressed: listing.parent.isEmpty || loading
+                            ? null
+                            : () => open(listing.parent),
+                        icon: const Icon(Icons.arrow_upward),
+                      ),
+                      IconButton(
+                        tooltip: 'Home directory',
+                        onPressed: listing.home.isEmpty || loading
+                            ? null
+                            : () => open(listing.home),
+                        icon: const Icon(Icons.home_outlined),
+                      ),
+                      const SizedBox(width: 6),
+                      Expanded(
+                        child: SelectableText(
+                          listing.path,
+                          key: const ValueKey('directory-path'),
+                          minLines: 1,
+                          maxLines: 2,
+                          style: style.mono(
+                            color: theme.colorScheme.onSurface,
+                            height: 1.3,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                if (problem != null)
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(24, 0, 24, 8),
+                    child: Text(
+                      problem!,
+                      style: theme.textTheme.bodySmall?.copyWith(
+                        color: theme.colorScheme.error,
+                      ),
+                    ),
+                  ),
+                const Divider(height: 1),
+                Expanded(
+                  child: loading
+                      ? const Center(
+                          child: CircularProgressIndicator.adaptive(),
+                        )
+                      : names.isEmpty
+                      ? Center(
+                          child: Text(
+                            'No directories inside',
+                            style: TextStyle(
+                              color: theme.colorScheme.onSurfaceVariant,
+                            ),
+                          ),
+                        )
+                      : ListView.builder(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 12,
+                            vertical: 4,
+                          ),
+                          itemCount: names.length,
+                          itemBuilder: (context, index) => ListTile(
+                            key: ValueKey('directory-${names[index]}'),
+                            dense: true,
+                            leading: const Icon(Icons.folder_outlined),
+                            title: Text(
+                              names[index],
+                              style: theme.textTheme.bodyMedium?.copyWith(
+                                color: theme.colorScheme.onSurface,
+                              ),
+                            ),
+                            trailing: const Icon(Icons.chevron_right),
+                            onTap: () => open(
+                              listing.path.endsWith('/')
+                                  ? '${listing.path}${names[index]}'
+                                  : '${listing.path}/${names[index]}',
+                            ),
+                          ),
+                        ),
+                ),
+                if (listing.cut)
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(24, 6, 24, 0),
+                    child: Text(
+                      'Only the first ${listing.directories.length} directories are listed.',
+                      style: theme.textTheme.bodySmall?.copyWith(
+                        color: theme.colorScheme.onSurfaceVariant,
+                      ),
+                    ),
+                  ),
+              ],
+            ),
+          );
+        },
       ),
     );
-    controller.dispose();
-    if (selected != null && selected.isNotEmpty) {
-      agent.setWorkingDirectory(selected);
+    _directoryChooserOpen = false;
+    return chosen;
+  }
+
+  /// A session that the app opens with, and that has no conversation yet,
+  /// asks where it should work.
+  void _offerWorkingDirectory(AgentConnection connection) {
+    if (!connection.connected ||
+        connection.streaming ||
+        connection.messages.isNotEmpty) {
+      return;
     }
+    final session = connection.currentSession ?? '';
+    if (!_directoryOffered.add('${identityHashCode(connection)} $session')) {
+      return;
+    }
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      if (!mounted || connection != agent) return;
+      final chosen = await _chooseDirectory(
+        title: 'Where should this session work?',
+        start: connection.currentCWD,
+      );
+      if (chosen == null ||
+          chosen.isEmpty ||
+          chosen == connection.currentCWD ||
+          !connection.connected ||
+          connection.streaming ||
+          connection.messages.isNotEmpty) {
+        return;
+      }
+      connection.setWorkingDirectory(chosen);
+    });
+  }
+
+  /// A new session starts by asking where it should work.
+  Future<void> _startNewSession() async {
+    final connection = agent;
+    if (!connection.connected) return;
+    final chosen = await _chooseDirectory(
+      title: 'Where should the new session work?',
+      start: connection.currentCWD,
+    );
+    if (chosen == null || !connection.connected) return;
+    connection.newSession(cwd: chosen);
   }
 
   String _sessionTimestamp(DateTime? time) {
@@ -4377,17 +4703,35 @@ class _AgentPageState extends State<AgentPage> with WidgetsBindingObserver {
                           ),
                           subtitle: Padding(
                             padding: const EdgeInsets.only(top: 3),
-                            child: Text(
-                              session.summary.isEmpty
-                                  ? 'No completed turn summary yet.'
-                                  : session.summary,
-                              maxLines: 2,
-                              overflow: TextOverflow.ellipsis,
-                              style: theme.textTheme.bodyMedium?.copyWith(
-                                color: session.summary.isEmpty
-                                    ? theme.colorScheme.onSurfaceVariant
-                                    : theme.colorScheme.onSurface,
-                              ),
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  session.summary.isEmpty
+                                      ? 'No completed turn summary yet.'
+                                      : session.summary,
+                                  maxLines: 2,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: theme.textTheme.bodyMedium?.copyWith(
+                                    color: session.summary.isEmpty
+                                        ? theme.colorScheme.onSurfaceVariant
+                                        : theme.colorScheme.onSurface,
+                                  ),
+                                ),
+                                if (session.cwd.isNotEmpty)
+                                  Padding(
+                                    padding: const EdgeInsets.only(top: 3),
+                                    child: Text(
+                                      _shortPath(session.cwd, 44),
+                                      style: style.mono(
+                                        size: 11.5,
+                                        height: 1.3,
+                                        color:
+                                            theme.colorScheme.onSurfaceVariant,
+                                      ),
+                                    ),
+                                  ),
+                              ],
                             ),
                           ),
                           onTap: () => Navigator.pop(context, session.id),
@@ -4399,7 +4743,7 @@ class _AgentPageState extends State<AgentPage> with WidgetsBindingObserver {
         ),
       );
       if (selected == '__new_session__') {
-        agent.newSession();
+        await _startNewSession();
       } else if (selected != null) {
         agent.switchSession(selected);
       }
@@ -4593,7 +4937,6 @@ class _AgentPageState extends State<AgentPage> with WidgetsBindingObserver {
     }
     const commands = [
       CommandSuggestion('/compact ', 'summarize older context; optional focus'),
-      CommandSuggestion('/cwd ', 'change agent working directory'),
       CommandSuggestion('/model ', 'switch model'),
       CommandSuggestion('/thinking ', 'switch reasoning effort'),
       CommandSuggestion('/sessions', 'select another session'),
@@ -4619,13 +4962,6 @@ class _AgentPageState extends State<AgentPage> with WidgetsBindingObserver {
       case '/compact':
         final instructions = input.trim().substring('/compact'.length).trim();
         agent.compact(instructions);
-      case '/cwd':
-        final workspace = input.trim().substring('/cwd'.length).trim();
-        if (workspace.isEmpty) {
-          agent.setLocalStatus('usage: /cwd <directory>');
-          return;
-        }
-        agent.setWorkingDirectory(workspace);
       case '/model':
         if (parts.length != 2 ||
             !agent.availableModels.any((model) => model.id == parts[1])) {
@@ -4642,7 +4978,7 @@ class _AgentPageState extends State<AgentPage> with WidgetsBindingObserver {
       case '/sessions':
         _showSessions();
       case '/new':
-        agent.newSession();
+        unawaited(_startNewSession());
       case '/name':
         final value = input.trim().substring('/name'.length).trim();
         agent.setSessionName(value.isEmpty || value == 'null' ? null : value);
@@ -4652,7 +4988,7 @@ class _AgentPageState extends State<AgentPage> with WidgetsBindingObserver {
         agent.clearTranscript();
       case '/help':
         agent.setLocalStatus(
-          'commands: /compact [focus] /cwd /model /thinking /sessions /new /name /abort /clear',
+          'commands: /compact [focus] /model /thinking /sessions /new /name /abort /clear',
         );
       default:
         agent.setLocalStatus('unknown command: ${parts.first}');
@@ -5168,7 +5504,7 @@ class _AgentPageState extends State<AgentPage> with WidgetsBindingObserver {
   }
 
   /// Token counters of the session and how full the context window is.
-  Widget _usageStats() {
+  Widget _usageStats({bool trailing = false}) {
     final theme = Theme.of(context);
     final style = ForgeStyle.of(context);
     final window = agent.contextWindow;
@@ -5187,6 +5523,7 @@ class _AgentPageState extends State<AgentPage> with WidgetsBindingObserver {
         fontFeatures: const [ui.FontFeature.tabularFigures()],
       ),
       child: Wrap(
+        alignment: trailing ? WrapAlignment.end : WrapAlignment.start,
         spacing: 12,
         runSpacing: 2,
         crossAxisAlignment: WrapCrossAlignment.center,
@@ -5214,7 +5551,15 @@ class _AgentPageState extends State<AgentPage> with WidgetsBindingObserver {
               ),
             ],
           ),
-          Text('upstream ${agent.upstreamTransport}'),
+          Text('upstream ${agent.upstream}'),
+          if (agent.currentCWD.isNotEmpty)
+            Tooltip(
+              message: agent.currentCWD,
+              child: Text(
+                'cwd ${_shortPath(agent.currentCWD)}',
+                key: const ValueKey('header-working-directory'),
+              ),
+            ),
         ],
       ),
     );
@@ -5331,16 +5676,6 @@ class _AgentPageState extends State<AgentPage> with WidgetsBindingObserver {
                   ),
                   gap,
                 ],
-                _toolbarIconButton(
-                  tooltip: agent.currentCWD.isEmpty
-                      ? 'Set agent working directory'
-                      : 'Workspace: ${agent.currentCWD}',
-                  onPressed: agent.connected && !agent.streaming
-                      ? _showWorkspace
-                      : null,
-                  icon: Icons.folder_outlined,
-                ),
-                gap,
                 _connectionManagerButton(compact),
               ],
             ),
@@ -5349,9 +5684,9 @@ class _AgentPageState extends State<AgentPage> with WidgetsBindingObserver {
             if (constraints.maxWidth >= 1000)
               Row(
                 children: [
-                  Expanded(child: _statusLine()),
+                  Expanded(flex: 2, child: _statusLine()),
                   const SizedBox(width: 16),
-                  _usageStats(),
+                  Flexible(flex: 5, child: _usageStats(trailing: true)),
                 ],
               )
             else ...[

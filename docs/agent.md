@@ -72,7 +72,7 @@ Forge's protocol authenticates and encrypts on its own, and has not been indepen
 | `--allow-remote` | Permit an address that is not loopback |
 | `--authorized-devices <file>` | The device whitelist |
 | `--print-identity` | Print the agent's identity and exit |
-| `--cwd <directory>` | The workspace |
+| `--cwd <directory>` | The working directory of the first session |
 | `--model <id>` | The model |
 | `--thinking <level>` | `off`, `minimal`, `low`, `medium`, `high`, `xhigh` or `max` |
 | `--prompt <text>` | Run one prompt and exit |
@@ -111,15 +111,25 @@ Typed into the prompt in Forge:
 | `/model <id>` | Switches model |
 | `/thinking <level>` | Sets reasoning effort |
 | `/compact [focus]` | Summarizes older turns |
-| `/cwd <directory>` | Changes the workspace |
 | `/sessions` | Opens the session list |
-| `/new` | Starts a session |
+| `/new` | Starts a session, after asking where it should work |
 | `/name <name>` | Names the session |
 | `/abort` | Stops the turn and ends a running tool |
 | `/clear` | Clears the visible transcript; the conversation is kept |
 | `/help` | Lists commands |
 
-The model, thinking level, workspace and compaction cannot be changed while a turn is running.
+The model, thinking level and compaction cannot be changed while a turn is running.
+
+## Working directory
+
+Each session has its own working directory, stored in its session file.
+
+- `--cwd` is where the first session works, and where session files are kept.
+- When Forge starts a session, it asks where the session should work and lets you browse the directories on the agent's machine.
+- A session the app opens with asks too, as long as it has no conversation yet.
+- The directory stays with the session. To work somewhere else, start a session there.
+
+Forge shows the directory in its header and beside each session in the session list.
 
 ## The terminal client
 
