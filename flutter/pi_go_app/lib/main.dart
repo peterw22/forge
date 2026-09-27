@@ -5118,6 +5118,12 @@ class _AgentPageState extends State<AgentPage> with WidgetsBindingObserver {
 
   Future<String> _deviceAuthorizationName() async {
     final info = DeviceInfoPlugin();
+    // In a browser the platform is that of the device, which has no native
+    // device information to read.
+    if (kIsWeb) {
+      final platform = ((await info.webBrowserInfo).platform ?? '').trim();
+      return platform.isEmpty ? 'Forge Web' : 'Forge Web on $platform';
+    }
     switch (defaultTargetPlatform) {
       case TargetPlatform.android:
         final device = await info.androidInfo;

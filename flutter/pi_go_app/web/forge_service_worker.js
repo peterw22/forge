@@ -1,13 +1,13 @@
-const CACHE_NAME = 'forge-web-v11';
+const CACHE_NAME = 'forge-web-v13';
 const APP_SHELL = [
   './',
   './index.html',
-  './flutter_bootstrap.js?v=11',
+  './flutter_bootstrap.js?v=13',
   './flutter.js',
   // The WebAssembly build runs where supported; main.dart.js is the fallback.
-  './main.dart.wasm?v=11',
-  './main.dart.mjs?v=11',
-  './main.dart.js?v=11',
+  './main.dart.wasm?v=13',
+  './main.dart.mjs?v=13',
+  './main.dart.js?v=13',
   './manifest.json',
   './version.json',
   './favicon.png',
