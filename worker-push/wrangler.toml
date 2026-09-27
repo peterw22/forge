@@ -10,6 +10,10 @@ PAIRING_TTL_SECONDS = "300"
 REQUEST_CLOCK_SKEW_SECONDS = "300"
 EVENT_RATE_LIMIT_PER_MINUTE = "30"
 FCM_PROJECT_ID = "forge-2aaf5"
+# The public half of the Web Push key; the private half is the secret
+# VAPID_PRIVATE_KEY. Web Push is off while either is empty.
+VAPID_PUBLIC_KEY = "BG7FA0-Sn3zHqc-XSsR9eFM1A8LMM9Xwvw_NgjL1baUkxxWL5HAJb6SAVtyxXJ7WGabuEZdDiVHeumgPyDliP-4"
+VAPID_SUBJECT = "https://forge.tingouw.com"
 
 [[d1_databases]]
 binding = "DB"

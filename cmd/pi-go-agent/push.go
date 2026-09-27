@@ -359,8 +359,16 @@ func (manager *pushManager) CompletePairing(ctx context.Context, deviceID, pairi
 	return true, manager.saveLocked()
 }
 
+func supportedPushPlatform(platform string) bool {
+	switch platform {
+	case "ios", "android", "macos", "web":
+		return true
+	}
+	return false
+}
+
 func (manager *pushManager) SetDevicePlatform(deviceID, platform string) error {
-	if platform != "ios" && platform != "android" && platform != "macos" {
+	if !supportedPushPlatform(platform) {
 		return errors.New("unsupported push device platform")
 	}
 	manager.mu.Lock()

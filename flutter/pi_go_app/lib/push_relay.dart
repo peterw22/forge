@@ -5,6 +5,7 @@ import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 
 import 'push_identity.dart';
+import 'web_push.dart';
 
 class PushRelayException implements Exception {
   const PushRelayException(this.message);
@@ -41,7 +42,13 @@ class PushRelayClient {
   }
 
   Future<void> _registerCurrentEndpoint(PushIdentity current) async {
-    if (!kIsWeb && defaultTargetPlatform == TargetPlatform.android) {
+    if (kIsWeb) {
+      final key = await _getPublic('/v1/web-push-key');
+      final subscription = await webPushSubscription(
+        '${key['publicKey'] ?? ''}',
+      );
+      if (subscription != null) await _registerSubscription(subscription);
+    } else if (defaultTargetPlatform == TargetPlatform.android) {
       if (current.apnsToken.isNotEmpty) {
         await registerPushEndpoint(current.apnsToken, 'production');
       }
@@ -59,6 +66,7 @@ class PushRelayClient {
       'displayName': switch (pushPlatform) {
         'android' => 'Forge Android',
         'macos' => 'Forge macOS',
+        'web' => 'Forge Web',
         _ => 'Forge iOS',
       },
     });
@@ -85,6 +93,23 @@ class PushRelayClient {
         'environment': android ? 'production' : environment,
         'topic': 'com.tingouw.forge',
         'token': token,
+      },
+    );
+  }
+
+  Future<void> _registerSubscription(Map<String, Object?> subscription) async {
+    final value = identity;
+    if (value == null) return;
+    await signedRequest(
+      principalType: 'device',
+      principalId: value.deviceId,
+      method: 'PUT',
+      path: '/v1/devices/${value.deviceId}/push-endpoint',
+      body: {
+        'provider': 'webpush',
+        'environment': 'production',
+        'topic': 'com.tingouw.forge',
+        'subscription': subscription,
       },
     );
   }
@@ -180,6 +205,11 @@ class PushRelayClient {
     );
     final responseBody = await response.stream.bytesToString();
     return _decode(response.statusCode, responseBody);
+  }
+
+  Future<Map<String, dynamic>> _getPublic(String path) async {
+    final response = await _http.get(Uri.parse('$pushRelayBaseURL$path'));
+    return _decode(response.statusCode, response.body);
   }
 
   Future<Map<String, dynamic>> _postPublic(

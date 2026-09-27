@@ -13,12 +13,15 @@ import {
 } from "./crypto";
 import { sendApns } from "./apns";
 import { sendFcm } from "./fcm";
+import { parseSubscription, sendWebPush, webPushConfigured } from "./webpush";
+import type { WebPushSubscription } from "./webpush";
 import type { EncryptedPushEnvelope } from "./fcm";
-import { ApiError, errorResponse, json, optionalText, readJson, requireText } from "./http";
+import { ApiError, errorResponse, json, optionalText, preflightResponse, readJson, requireText } from "./http";
 import type {
   Env,
   PairingRow,
   Platform,
+  Provider,
   PublicJwk,
   PushEndpointRow,
   RegistrationChallengeRow,
@@ -52,8 +55,15 @@ export default {
 async function route(request: Request, env: Env): Promise<Response> {
   const url = new URL(request.url);
   const path = url.pathname;
+  if (request.method === "OPTIONS") return preflightResponse();
   if (request.method === "GET" && path === "/healthz") {
     return json({ ok: true, service: "forge-worker-push" });
+  }
+  if (request.method === "GET" && path === "/v1/web-push-key") {
+    if (!webPushConfigured(env)) {
+      throw new ApiError(503, "web_push_unavailable", "This relay has no Web Push key");
+    }
+    return json({ publicKey: env.VAPID_PUBLIC_KEY });
   }
   if (request.method === "POST" && path === "/v1/registration-challenges") {
     return createRegistrationChallenge(request, env);
@@ -134,8 +144,9 @@ async function createRegistrationChallenge(request: Request, env: Env): Promise<
   const principalId = requireIdentifier(body.principalId, "principalId");
   let platform: Platform | null = null;
   if (principalType === "device") {
-    if (body.platform !== "ios" && body.platform !== "android" && body.platform !== "macos") {
-      throw new ApiError(400, "invalid_request", "platform must be ios, android, or macos");
+    if (body.platform !== "ios" && body.platform !== "android" && body.platform !== "macos" &&
+        body.platform !== "web") {
+      throw new ApiError(400, "invalid_request", "platform must be ios, android, macos, or web");
     }
     platform = body.platform;
   }
@@ -259,31 +270,42 @@ interface PushEndpointBody {
   environment?: unknown;
   topic?: unknown;
   token?: unknown;
+  subscription?: unknown;
+}
+
+function providerOf(platform: Platform): Provider {
+  if (platform === "android") return "fcm";
+  return platform === "web" ? "webpush" : "apns";
 }
 
 async function putPushEndpoint(request: Request, env: Env, deviceId: string): Promise<Response> {
   const { body, bytes } = await readJson<PushEndpointBody>(request);
   await authenticateRequest(request, env, bytes, "device", deviceId);
-  if (body.provider !== "apns" && body.provider !== "fcm") {
-    throw new ApiError(400, "unsupported_provider", "provider must be apns or fcm");
+  if (body.provider !== "apns" && body.provider !== "fcm" && body.provider !== "webpush") {
+    throw new ApiError(400, "unsupported_provider", "provider must be apns, fcm, or webpush");
   }
   const device = await env.DB.prepare("SELECT platform FROM devices WHERE id = ? AND revoked_at IS NULL")
     .bind(deviceId)
     .first<{ platform: Platform }>();
   if (device === null) throw new ApiError(404, "device_not_found", "Device is not registered");
-  const expectedProvider = device.platform === "android" ? "fcm" : "apns";
-  if (body.provider !== expectedProvider) {
+  if (body.provider !== providerOf(device.platform)) {
     throw new ApiError(400, "provider_platform_mismatch", `Provider ${body.provider} is not valid for ${device.platform}`);
   }
   if (body.environment !== "development" && body.environment !== "production") {
     throw new ApiError(400, "invalid_request", "environment must be development or production");
   }
-  if (body.provider === "fcm" && body.environment !== "production") {
-    throw new ApiError(400, "invalid_request", "FCM endpoints must use production environment");
+  if (body.provider !== "apns" && body.environment !== "production") {
+    throw new ApiError(400, "invalid_request", `${body.provider} endpoints must use production environment`);
   }
   const topic = requireText(body.topic, "topic", 200);
   if (topic !== env.APNS_TOPIC) throw new ApiError(400, "invalid_topic", "Push topic is not allowed");
-  const token = requireText(body.token, "token", 4096);
+  if (body.provider === "webpush" && !webPushConfigured(env)) {
+    throw new ApiError(503, "web_push_unavailable", "This relay has no Web Push key");
+  }
+  // A browser has no token: its subscription is stored in the place of one.
+  const token = body.provider === "webpush"
+    ? JSON.stringify(parseSubscription(body.subscription))
+    : requireText(body.token, "token", 4096);
   if (body.provider === "apns" && !/^[0-9a-fA-F]{32,256}$/u.test(token)) {
     throw new ApiError(400, "invalid_push_token", "APNs device token is invalid");
   }
@@ -581,7 +603,7 @@ async function createPushEvent(request: Request, env: Env, agentId: string): Pro
     throw error;
   }
 
-  const provider = device.platform === "android" ? "fcm" : "apns";
+  const provider = providerOf(device.platform);
   const endpoint = await env.DB.prepare(
     `SELECT id, device_id, provider, environment, topic, token_ciphertext, token_iv, disabled_at
        FROM push_endpoints
@@ -603,13 +625,17 @@ async function createPushEvent(request: Request, env: Env, agentId: string): Pro
         opaqueEvent,
         device.platform === "macos",
       )
-    : await sendFcm(env, token, opaqueEvent);
+    : provider === "fcm"
+      ? await sendFcm(env, token, opaqueEvent)
+      : await sendWebPush(env, JSON.parse(token) as WebPushSubscription, opaqueEvent);
   const delivered = result.status >= 200 && result.status < 300;
   await recordDelivery(env, agentId, eventId, delivered ? "delivered" : "failed",
     result.status, result.reason, delivered ? now : null);
   const invalidToken = provider === "apns"
     ? result.status === 410 || ["BadDeviceToken", "DeviceTokenNotForTopic", "Unregistered"].includes(result.reason ?? "")
-    : ["UNREGISTERED", "INVALID_ARGUMENT", "SENDER_ID_MISMATCH"].includes(result.reason ?? "");
+    : provider === "fcm"
+      ? ["UNREGISTERED", "INVALID_ARGUMENT", "SENDER_ID_MISMATCH"].includes(result.reason ?? "")
+      : result.status === 404 || result.status === 410;
   if (invalidToken) {
     await env.DB.prepare("UPDATE push_endpoints SET disabled_at = ?, disabled_reason = ? WHERE id = ?")
       .bind(now, result.reason ?? `${provider} ${result.status}`, endpoint.id)
@@ -625,7 +651,7 @@ async function createPushEvent(request: Request, env: Env, agentId: string): Pro
 
 function parseEncryptedEnvelope(value: unknown): EncryptedPushEnvelope {
   if (typeof value !== "object" || value === null) {
-    throw new ApiError(400, "encrypted_push_required", "Android push content must be encrypted");
+    throw new ApiError(400, "encrypted_push_required", "Push content must be encrypted");
   }
   const body = value as Record<string, unknown>;
   if (body.version !== 1) throw new ApiError(400, "invalid_envelope", "Unsupported push envelope version");

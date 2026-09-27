@@ -1,6 +1,6 @@
 # The push relay
 
-Phones suspend apps, so a connection to the agent cannot stay open. To tell you that a tool needs approval or that a turn has finished, a notification has to pass through Apple or Google, and through a relay that holds the credentials for those services.
+Phones suspend apps, and a browser closes its pages, so a connection to the agent cannot stay open. To tell you that a tool needs approval or that a turn has finished, a notification has to pass through Apple, Google or the push service of a browser, and through a relay that holds the credentials for those services.
 
 The relay in `worker-push/` is built so that its operator cannot read what it delivers.
 
@@ -10,8 +10,8 @@ The relay in `worker-push/` is built so that its operator cannot read what it de
 |---|---|---|
 | Device | Its identity key, the content keys of paired agents | — |
 | Agent | Its identity key, the content keys of paired devices | The device's push token |
-| Relay | Apple and Google credentials, encrypted push tokens, who is paired with whom | Identity private keys, content keys, notification text |
-| Apple, Google | The push token | Notification text |
+| Relay | Apple and Google credentials, the Web Push key, encrypted push tokens and subscriptions, who is paired with whom | Identity private keys, content keys, notification text |
+| Apple, Google, the push service of a browser | The push token or the subscription | Notification text |
 
 Three kinds of key are involved, and no party holds all of them:
 
@@ -29,11 +29,11 @@ Three kinds of key are involved, and no party holds all of them:
 |---|---|
 | Which agent notified which device, and when | Kept for 30 days |
 | Display names of devices and agents | Optional, chosen by the client |
-| Push tokens | Encrypted at rest with a key the relay holds |
+| Push tokens, and the subscriptions of browsers | Encrypted at rest with a key the relay holds |
 | The size of each message | Not padded |
 | Network addresses of agents and devices | As for any server |
 
-Apple and Google see similar metadata for the notifications they carry.
+Apple, Google and the push service of a browser see similar metadata for the notifications they carry.
 
 ## Content encryption
 
@@ -61,8 +61,24 @@ The plaintext contains only an event type, a session ID, a fixed title and a one
 | iOS | Alert that reads "Encrypted notification", marked as modifiable | A notification service extension decrypts it and replaces the text |
 | Android | Data-only message | A native messaging service decrypts it and posts the notification |
 | macOS | Background message | Forge decrypts it while it is running |
+| Web | Web Push message | The service worker decrypts it and shows the notification |
 
-On Android and iOS no Dart code runs to handle a push, and nothing is shown for an unknown key or a message that fails to decrypt.
+On Android, on iOS and in a browser no Dart code runs to handle a push. In the apps nothing is shown for an unknown key or a message that fails to decrypt.
+
+### In a browser
+
+Web Push encrypts every message for the browser it is sent to (RFC 8291), with keys of the subscription, which the relay holds. That keeps the message from the push service, not from the relay. The content is therefore encrypted by the agent as on every other platform, and the relay wraps ciphertext.
+
+The relay signs its requests with one key of its own (VAPID, RFC 8292), whose public half a browser is subscribed with. Forge fetches it from the relay. A browser asks for no signature of the site, so a web client that is hosted elsewhere is notified by the same relay.
+
+The relay sends a request to the address a subscription names. It stores a subscription only if that address belongs to the push service of Google, Mozilla, Apple or Microsoft.
+
+A browser withdraws the subscription of a site that receives a push and shows nothing. Two rules of the apps therefore do not hold in a browser:
+
+- A message with an unknown key, or one that fails to decrypt, is shown as "Encrypted notification".
+- A notification is shown for the session on screen too.
+
+The content key is kept in the browser's database as a key that decrypts and cannot be exported. No hardware protects it.
 
 ## Authenticating to the relay
 
@@ -109,6 +125,7 @@ Only the device can approve, and an agent cannot approve its own pairing. Either
 Registration:
 
 - `GET /healthz`
+- `GET /v1/web-push-key`
 - `POST /v1/registration-challenges`
 - `POST /v1/registrations`
 
@@ -128,7 +145,7 @@ Signed by an agent:
 - `DELETE /v1/agents/{agentId}/authorizations/{deviceId}`
 - `POST /v1/agents/{agentId}/events`
 
-Responses are sent with `Cache-Control: no-store`. Errors have the form:
+Responses are sent with `Cache-Control: no-store`, and may be read from any origin: a request is authorized by its signature, and the relay sets no cookie. Errors have the form:
 
 ```json
 { "error": { "code": "invalid_signature", "message": "Request signature is invalid" } }
@@ -143,7 +160,7 @@ Responses are sent with `Cache-Control: no-store`. Errors have the form:
 | Event records | Deleted after 30 days by a daily job |
 | Challenges, nonces, pairings | Deleted once expired |
 | Push tokens | AES-GCM encrypted; a hash enforces uniqueness |
-| Rejected tokens | Disabled when Apple or Google reports them invalid |
+| Rejected tokens | Disabled when Apple, Google or the push service of a browser reports them invalid |
 
 ## Limitations
 
@@ -152,24 +169,29 @@ Responses are sent with `Cache-Control: no-store`. Errors have the form:
 - **The relay can replay a notification.** Devices do not remember which events they have shown, so a repeated message is displayed again. It cannot be altered or retargeted.
 - **Message size is visible.**
 - **Delivery is attempted once, within the request.** There is no queue or retry.
+- **A browser may replace its subscription.** Forge registers the new one when it is opened next; until then that browser receives nothing.
 
 ## Running your own
 
 The agent uses `https://forge-push.tingouw.com` unless `PI_GO_PUSH_RELAY_URL` names another relay. `PI_GO_PUSH_DISABLED=true` turns push off. The client takes its relay from the build setting `FORGE_PUSH_RELAY_URL`; an empty value builds a client without push.
 
-Deployment is described in [`worker-push/README.md`](../../worker-push/README.md). A push service only accepts notifications for apps signed by the account that owns the credentials, so your own relay needs your own build of Forge.
+Deployment is described in [`worker-push/README.md`](../../worker-push/README.md). A push service only accepts notifications for apps signed by the account that owns the credentials, so your own relay needs your own build of Forge. For browsers it needs a Web Push key alone.
 
 ## Tests
 
 | File | Covers |
 |---|---|
 | `worker-push/test/crypto.test.ts` | Request signing and signature verification |
+| `worker-push/test/webpush.test.ts` | Web Push encryption against the example of RFC 8291, the signature of the relay, which addresses a subscription may name |
+| `worker-push/test/relay.test.ts` | A browser from registration to delivery, on a database with every migration applied |
+| `flutter/pi_go_app/test/forge_push_test.mjs` | Decryption in the service worker, of an envelope the agent encrypted |
+| `flutter/pi_go_app/test/web_push_test.dart` | The content key and the tap on a notification, in a browser |
 | `cmd/pi-go-agent/push_content_crypto_test.go` | Content encryption and its binding to agent, device and event |
 | `cmd/pi-go-agent/push_authorization_test.go` | Listing and revoking authorizations |
 
 ## Related work
 
-- Web Push message encryption (RFC 8291) encrypts a payload so that the push service cannot read it.
+- Web Push message encryption (RFC 8291) encrypts a payload so that the push service cannot read it. Forge uses it for browsers, around its own encryption, which keeps the content from the relay as well.
 - Signal sends a push that carries no content and fetches the message over its own channel.
 
 Forge carries a short encrypted summary in the push itself, because the app cannot hold a connection to fetch one.

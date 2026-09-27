@@ -11,6 +11,7 @@ The agent runs on its own. The clients and the relay, as they are in this reposi
 | Push relay address | `https://forge-push.tingouw.com` | Set `PI_GO_PUSH_RELAY_URL` for the agent and build the client with `--dart-define=FORGE_PUSH_RELAY_URL=…` |
 | Relay database | A D1 database ID | `worker-push/wrangler.toml` |
 | Firebase project | `forge-2aaf5` | `worker-push/wrangler.toml` |
+| Web Push public key and contact | `VAPID_PUBLIC_KEY`, `VAPID_SUBJECT` | `worker-push/wrangler.toml` |
 | Download sites | `forge-app.tingouw.com`, `forge.tingouw.com` | `s3/` |
 
 None of these is a secret. An app identifier and a team are visible in every app that is distributed.
@@ -19,7 +20,7 @@ None of these is a secret. An app identifier and a team are visible in every app
 
 | Secret | Kept |
 |---|---|
-| Apple push key, Firebase service account, token encryption key | As secrets of the relay |
+| Apple push key, Firebase service account, Web Push private key, token encryption key | As secrets of the relay |
 | `google-services.json` | Locally, in `flutter/pi_go_app/android/app/` |
 | Provisioning profiles, signing certificates | In your keychain and Apple account |
 | Ad Hoc export options, device identifiers | Locally, in `s3/`. See [`s3/README.md`](../s3/README.md) |
@@ -40,7 +41,7 @@ This contacts no service of the maintainer. Notifications are off.
 
 See [`worker-push/README.md`](../worker-push/README.md). Point the agent at it with `PI_GO_PUSH_RELAY_URL`, and build the client with `--dart-define=FORGE_PUSH_RELAY_URL=https://your-relay`. An empty value builds a client without push.
 
-A push service delivers only to apps signed by the account that owns the push credentials. Your relay therefore needs your build of the clients.
+A push service delivers only to apps signed by the account that owns the push credentials. Your relay therefore needs your build of the clients. The web client is the exception: it takes the Web Push key from the relay it is built for, and needs no signature.
 
 ## The clients
 

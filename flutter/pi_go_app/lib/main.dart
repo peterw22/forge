@@ -28,6 +28,7 @@ import 'push_relay.dart';
 import 'session_crypto.dart';
 
 import 'transport.dart';
+import 'web_push.dart';
 
 void main() => runApp(const PiGoApp());
 
@@ -1847,7 +1848,7 @@ class _AgentPageState extends State<AgentPage> with WidgetsBindingObserver {
     if (pushSupported) {
       _pushRelay = PushRelayClient();
       _pushEvents = nativePushEvents.listen(_handlePushEvent);
-      unawaited(_initializePush());
+      if (pushPermitted) unawaited(_initializePush());
     }
     if (widget.connection == null) {
       unawaited(_restoreConnections());
@@ -2362,12 +2363,31 @@ class _AgentPageState extends State<AgentPage> with WidgetsBindingObserver {
     }
   }
 
+  Future<void> _enablePushInBrowser() async {
+    // A browser asks only in answer to a tap, so nothing is awaited before.
+    final granted = await requestWebPushPermission();
+    if (!mounted) return;
+    if (!granted) {
+      _showPushStatus(
+        agent,
+        'Notifications are not allowed. Allow them for Forge in the settings of the browser.',
+      );
+      return;
+    }
+    setState(() {});
+    await _initializePush();
+  }
+
   Future<void> _handlePushEvent(PushEvent event) async {
     if (event.type == 'apnsToken' || event.type == 'fcmToken') {
       await _pushRelay?.refreshIdentityAndToken();
       return;
     }
     if (event.type != 'notificationTap') return;
+    // A tap that opens Forge arrives before the connections are restored.
+    for (var wait = 0; !_connectionRestoreComplete && wait < 50; wait++) {
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+    }
     final agentId = '${event.values['agentId'] ?? ''}';
     final sessionId = '${event.values['sessionId'] ?? ''}';
     if (agentId.isEmpty || sessionId.isEmpty) return;
@@ -5449,7 +5469,16 @@ class _AgentPageState extends State<AgentPage> with WidgetsBindingObserver {
         ),
         if (pushSupported || deviceIdentityExportSupported)
           const PopupMenuDivider(height: 9),
-        if (pushSupported)
+        if (pushSupported && !pushPermitted)
+          _controlsItem(
+            onTap: _enablePushInBrowser,
+            icon: Icons.notifications_none_outlined,
+            label: const Text(
+              'Turn on notifications',
+              overflow: TextOverflow.ellipsis,
+            ),
+          ),
+        if (pushSupported && pushPermitted)
           _controlsItem(
             enabled:
                 agent.connected &&

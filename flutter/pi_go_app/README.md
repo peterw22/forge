@@ -8,7 +8,7 @@ One Flutter project that builds Forge for iOS, Android, macOS, Linux and the web
 | Android | A remote agent | Push, while closed |
 | macOS | A remote agent, or one the app starts itself | Push, while running |
 | Linux | A remote agent | Desktop, while running |
-| Web | A remote agent, over `wss://` only | None |
+| Web | A remote agent, over `wss://` only | Push, while closed |
 
 Minimum versions: iOS 15, macOS 12.
 
@@ -168,17 +168,34 @@ See [`flatpak/README.md`](../../flatpak/README.md). The Linux client cannot be b
 
 ## Notifications
 
-Notification text is encrypted by the agent and decrypted on the device. The relay, Apple and Google carry ciphertext. See [the push relay](../../docs/security/push-relay.md).
+Notification text is encrypted by the agent and decrypted on the device. The relay, Apple, Google and the push service of a browser carry ciphertext. See [the push relay](../../docs/security/push-relay.md).
 
 | Platform | Decrypted by |
 |---|---|
 | iOS | `ForgeNotificationService`, a notification service extension |
 | Android | A native messaging service; no Dart code runs |
 | macOS | The app, while it is running. A closed app receives nothing |
+| Web | The service worker, `web/forge_push.js`; no Dart code runs |
 
 Nothing is shown for an unknown key or a message that fails to decrypt.
 
 Tapping a notification opens the connection and session it belongs to. Notifications for the session you are looking at are suppressed.
+
+### In a browser
+
+A browser notifies only after **Turn on notifications** in the settings menu, because it asks for permission only in answer to a tap. Safari on an iPhone or iPad offers this only to Forge on the Home Screen, which is a device of its own, with its own entry in the agent's whitelist.
+
+Two rules of the apps do not hold here, because a browser withdraws the subscription of a site that receives a push and shows nothing:
+
+- A message that cannot be decrypted is shown as "Encrypted notification".
+- A notification is shown for the session you are looking at too.
+
+The key that decrypts is kept by the browser and cannot be exported, but no hardware protects it, as with the identity key of the web client.
+
+```bash
+node --test test/forge_push_test.mjs
+flutter test --platform chrome test/web_push_test.dart
+```
 
 Android does not keep a connection open in the background. After **Force stop** in Android's settings, push is off until Forge is opened again.
 

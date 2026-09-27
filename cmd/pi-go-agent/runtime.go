@@ -1215,8 +1215,8 @@ func (client *clientConnection) handle(command backendCommand) error {
 	runtime := client.runtime
 	switch command.Type {
 	case "push_hello":
-		if command.Platform != "ios" && command.Platform != "android" && command.Platform != "macos" {
-			return errors.New("push pairing requires an iOS, Android, or macOS client")
+		if !supportedPushPlatform(command.Platform) {
+			return errors.New("push pairing requires an iOS, Android, macOS, or web client")
 		}
 		if client.registry.push == nil {
 			return errors.New("push manager is unavailable")

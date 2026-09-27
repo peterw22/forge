@@ -96,11 +96,11 @@ When a conversation grows, `/compact` replaces older turns with a summary. The s
 - The macOS app can start an agent of its own. Every other client connects to an agent that is already running.
 - Identity keys live in the platform's key store. See [device authentication](security/device-authentication.md#device-identity).
 
-Native code handles what Flutter cannot: key storage, and decrypting a notification while the app is not running.
+Native code handles what Flutter cannot: key storage, and decrypting a notification while the app is not running. In a browser the service worker does the latter.
 
 ## The relay
 
-`worker-push` is a Cloudflare Worker with a D1 database. It holds the credentials for Apple's and Google's push services, records which device has approved which agent, and forwards encrypted notifications. See [the push relay](security/push-relay.md).
+`worker-push` is a Cloudflare Worker with a D1 database. It holds the credentials for Apple's and Google's push services and the key it signs Web Push with, records which device has approved which agent, and forwards encrypted notifications. See [the push relay](security/push-relay.md).
 
 ## Protocol
 

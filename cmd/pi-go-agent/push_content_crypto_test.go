@@ -50,3 +50,48 @@ func TestEncryptedPushContentHidesAndAuthenticatesMetadata(t *testing.T) {
 		t.Fatal("altered metadata authenticated")
 	}
 }
+
+// The browser decrypts this same envelope in
+// flutter/pi_go_app/test/forge_push_test.mjs, so a change of the format fails
+// on both sides.
+func TestEncryptedPushContentVectorOfOtherClients(t *testing.T) {
+	rawKey := make([]byte, 32)
+	for i := range rawKey {
+		rawKey[i] = byte(i + 1)
+	}
+	block, _ := aes.NewCipher(rawKey)
+	gcm, _ := cipher.NewGCM(block)
+	nonce, _ := decodeBase64URL("QypfuyMwe3ZrsA93")
+	ciphertext, _ := decodeBase64URL("O32vvImZoAcD6DzxUlC4cluUAJFVCsWGVPGNR0AZmzUNKmKXXY_DI3Mkq-oPfh0I43dsZzxgrr0HyQzgDrqvCJEmk1DMyxaiSYS8KT3keKtaS4IuRROHmoh4oRt0GX8epnqF0AfYHJCdltDjlI4sOhOuMzdSIS1tI5oRkoVZmFfo5FPydjd32QssKhAgoTGvR-NIw4OEJ6NolVLKSj8Xio4ghB5J")
+	aad := strings.Join([]string{"FORGE-PUSH-CONTENT-V1", "agent-identifier-12345", "device-identifier-123", "event-identifier-1234", "key-identifier-123456"}, "\n")
+	plaintext, err := gcm.Open(nil, nonce, ciphertext, []byte(aad))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var content map[string]string
+	if err := json.Unmarshal(plaintext, &content); err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]string{
+		"type": "approval_required", "sessionId": "private-session-name",
+		"title": "Forge approval required", "body": "This operation may delete workspace files.",
+	}
+	for name, value := range want {
+		if content[name] != value {
+			t.Fatalf("%s is %q, not %q", name, content[name], value)
+		}
+	}
+}
+
+func TestPushAcceptsTheWebAsAPlatform(t *testing.T) {
+	for _, platform := range []string{"ios", "android", "macos", "web"} {
+		if !supportedPushPlatform(platform) {
+			t.Fatalf("%s is refused", platform)
+		}
+	}
+	for _, platform := range []string{"", "linux", "Web"} {
+		if supportedPushPlatform(platform) {
+			t.Fatalf("%q is accepted", platform)
+		}
+	}
+}

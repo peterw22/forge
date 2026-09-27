@@ -1,6 +1,7 @@
 import 'dart:convert';
 
 import 'device_identity.dart';
+import 'web_push.dart';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
@@ -28,16 +29,25 @@ bool get deviceIdentityExportSupported => deviceIdentitySupported;
 
 bool get pushSupported =>
     pushRelayBaseURL.isNotEmpty &&
-    !kIsWeb &&
-    (defaultTargetPlatform == TargetPlatform.iOS ||
-        defaultTargetPlatform == TargetPlatform.android ||
-        defaultTargetPlatform == TargetPlatform.macOS);
+    (kIsWeb
+        ? webPushSupported
+        : (defaultTargetPlatform == TargetPlatform.iOS ||
+              defaultTargetPlatform == TargetPlatform.android ||
+              defaultTargetPlatform == TargetPlatform.macOS));
 
-String get pushPlatform => switch (defaultTargetPlatform) {
-  TargetPlatform.android => 'android',
-  TargetPlatform.macOS => 'macos',
-  _ => 'ios',
-};
+/// A browser notifies only after the user has allowed it, which the apps
+/// arrange with the system.
+bool get pushPermitted => !kIsWeb || webPushPermission == 'granted';
+
+// In a browser the target platform is that of the device, so the web is
+// asked for first.
+String get pushPlatform => kIsWeb
+    ? 'web'
+    : switch (defaultTargetPlatform) {
+        TargetPlatform.android => 'android',
+        TargetPlatform.macOS => 'macos',
+        _ => 'ios',
+      };
 
 class DeviceIdentity {
   const DeviceIdentity({
@@ -109,6 +119,19 @@ Future<DeviceIdentity?> getDeviceIdentity() async {
 
 Future<PushIdentity?> getPushIdentity() async {
   if (!pushSupported) return null;
+  if (kIsWeb) {
+    final identity = await getSoftwareDeviceIdentity();
+    if (identity == null) return null;
+    // A browser has a subscription in the place of a token, which
+    // PushRelayClient registers.
+    return PushIdentity(
+      deviceId: identity.deviceId,
+      publicKey: identity.publicKey,
+      fingerprint: identity.fingerprint,
+      apnsToken: '',
+      apnsEnvironment: 'production',
+    );
+  }
   final value = await _pushIdentityChannel.invokeMethod<Map<dynamic, dynamic>>(
     'getIdentity',
   );
@@ -190,6 +213,14 @@ Future<void> storePushContentKey({
   required String key,
 }) async {
   if (!pushSupported) return;
+  if (kIsWeb) {
+    return storeWebPushContentKey(
+      agentId: agentId,
+      deviceId: deviceId,
+      keyId: keyId,
+      key: key,
+    );
+  }
   await _pushIdentityChannel.invokeMethod<void>('storePushKey', {
     'agentId': agentId,
     'deviceId': deviceId,
@@ -202,19 +233,21 @@ Future<void> setVisiblePushSession({
   required String agentId,
   required String sessionId,
 }) async {
-  if (!pushSupported) return;
+  // A browser requires a notification for every push, so none is held back
+  // for the session on screen.
+  if (!pushSupported || kIsWeb) return;
   await _pushIdentityChannel.invokeMethod<void>('setVisibleSession', {
     'agentId': agentId,
     'sessionId': sessionId,
   });
 }
 
-Stream<PushEvent> get nativePushEvents =>
-    !kIsWeb &&
-        (defaultTargetPlatform == TargetPlatform.iOS ||
-            defaultTargetPlatform == TargetPlatform.android ||
-            defaultTargetPlatform == TargetPlatform.macOS)
-    ? _pushIdentityEvents.receiveBroadcastStream().map(PushEvent.fromDynamic)
-    : const Stream<PushEvent>.empty();
+Stream<PushEvent> get nativePushEvents {
+  if (!pushSupported) return const Stream<PushEvent>.empty();
+  if (kIsWeb) return webPushEvents;
+  return _pushIdentityEvents.receiveBroadcastStream().map(
+    PushEvent.fromDynamic,
+  );
+}
 
 String canonicalJSON(Map<String, Object?> value) => jsonEncode(value);

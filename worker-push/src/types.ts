@@ -7,6 +7,9 @@ export interface Env {
   APNS_TOPIC: string;
   FCM_PROJECT_ID: string;
   FCM_SERVICE_ACCOUNT_JSON: string;
+  VAPID_PUBLIC_KEY: string;
+  VAPID_PRIVATE_KEY: string;
+  VAPID_SUBJECT: string;
   REGISTRATION_TTL_SECONDS: string;
   PAIRING_TTL_SECONDS: string;
   REQUEST_CLOCK_SKEW_SECONDS: string;
@@ -14,7 +17,8 @@ export interface Env {
 }
 
 export type PrincipalType = "device" | "agent";
-export type Platform = "ios" | "android" | "macos";
+export type Platform = "ios" | "android" | "macos" | "web";
+export type Provider = "apns" | "fcm" | "webpush";
 export type Scope = "notify.approval" | "notify.completed";
 export type EventType = "approval_required" | "session_completed";
 
@@ -58,7 +62,7 @@ export interface PairingRow {
 export interface PushEndpointRow {
   id: string;
   device_id: string;
-  provider: "apns" | "fcm";
+  provider: Provider;
   environment: "development" | "production";
   topic: string;
   token_ciphertext: string;

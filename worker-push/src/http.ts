@@ -8,11 +8,27 @@ export class ApiError extends Error {
   }
 }
 
+// Forge in a browser calls the relay from another origin. Any origin may: a
+// request is authorized by its signature, and the relay sets no cookie.
 const headers = {
   "content-type": "application/json; charset=utf-8",
   "cache-control": "no-store",
   "x-content-type-options": "nosniff",
+  "access-control-allow-origin": "*",
 };
+
+export function preflightResponse(): Response {
+  return new Response(null, {
+    status: 204,
+    headers: {
+      "access-control-allow-origin": "*",
+      "access-control-allow-methods": "GET, POST, PUT, DELETE",
+      "access-control-allow-headers":
+        "content-type, x-forge-principal-type, x-forge-principal-id, x-forge-timestamp, x-forge-nonce, x-forge-signature",
+      "access-control-max-age": "86400",
+    },
+  });
+}
 
 export function json(data: unknown, status = 200): Response {
   return new Response(JSON.stringify(data), { status, headers });

@@ -1,13 +1,16 @@
-const CACHE_NAME = 'forge-web-v13';
+importScripts('./forge_push.js?v=14');
+
+const CACHE_NAME = 'forge-web-v14';
 const APP_SHELL = [
   './',
   './index.html',
-  './flutter_bootstrap.js?v=13',
+  './flutter_bootstrap.js?v=14',
   './flutter.js',
+  './forge_push.js?v=14',
   // The WebAssembly build runs where supported; main.dart.js is the fallback.
-  './main.dart.wasm?v=13',
-  './main.dart.mjs?v=13',
-  './main.dart.js?v=13',
+  './main.dart.wasm?v=14',
+  './main.dart.mjs?v=14',
+  './main.dart.js?v=14',
   './manifest.json',
   './version.json',
   './favicon.png',
@@ -103,3 +106,53 @@ self.addEventListener('fetch', (event) => {
     }),
   );
 });
+
+self.addEventListener('push', (event) => {
+  event.waitUntil(showPush(event.data));
+});
+
+// A browser requires a notification for every push, and withdraws the
+// subscription of a site that shows none. A message that cannot be read is
+// therefore shown without content, and none is held back for the session on
+// screen.
+async function showPush(data) {
+  let title = 'Forge';
+  let body = 'Encrypted notification';
+  let tag;
+  let tap = null;
+  try {
+    const push = await forgePush.decrypt(data.json());
+    title = push.title;
+    body = push.body;
+    tag = push.eventId;
+    tap = { agentId: push.agentId, sessionId: push.sessionId };
+  } catch (_) {
+    // Never log ciphertext, key identifiers, routing metadata, or plaintext.
+  }
+  await self.registration.showNotification(title, {
+    body,
+    tag,
+    icon: './icons/Icon-192.png',
+    data: tap,
+  });
+}
+
+self.addEventListener('notificationclick', (event) => {
+  event.notification.close();
+  event.waitUntil(openForge(event.notification.data));
+});
+
+// The tap is left in the database for Forge to collect, which also reaches a
+// window that is opened only now.
+async function openForge(tap) {
+  if (tap) await forgePush.writeState('tap', { ...tap, at: Date.now() });
+  const windows = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
+  for (const client of windows) {
+    if ('focus' in client) {
+      await client.focus();
+      client.postMessage({ type: 'forge-notification-tap' });
+      return;
+    }
+  }
+  await self.clients.openWindow('./');
+}
