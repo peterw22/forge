@@ -2,7 +2,7 @@
 
 Forge can use Gemini through Google's Antigravity command line program, `agy`. Models appear as `agy/<model-id>`.
 
-Verified with agy 1.2.11.
+> **Supported but not fully tested.** The integration works in the cases described here, with agy 1.2.11. It has had far less use than the other providers, so expect rough edges.
 
 ## Setup
 

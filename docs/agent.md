@@ -59,6 +59,8 @@ Compare the fingerprint that `--print-identity` prints with the one Forge shows 
 
 ### The internet
 
+The web client requires a `wss://` address, which the agent does not serve itself; a tunnel or a proxy that provides TLS supplies it.
+
 Forge's protocol authenticates and encrypts on its own, and has not been independently audited. To reach an agent from outside your network, put it behind a VPN or a tunnel you trust. Read the [threat model](security/threat-model.md) first.
 
 ## Options

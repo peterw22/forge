@@ -24,7 +24,7 @@
 | [OpenAI Codex](providers/openai-codex.md) | `gpt-…` |
 | [OpenAI-compatible APIs](providers/openai-compatible.md) | `<name>/…` |
 | [Claude Code](providers/claude-code.md) | `claude/…` |
-| [Antigravity](providers/antigravity.md) | `agy/…` |
+| [Antigravity](providers/antigravity.md), not fully tested | `agy/…` |
 
 ## Features
 

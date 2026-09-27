@@ -8,7 +8,7 @@ One Flutter project that builds Forge for iOS, Android, macOS, Linux and the web
 | Android | A remote agent | Push, while closed |
 | macOS | A remote agent, or one the app starts itself | Push, while running |
 | Linux | A remote agent | Desktop, while running |
-| Web | A remote agent | None |
+| Web | A remote agent, over `wss://` only | None |
 
 Minimum versions: iOS 15, macOS 12.
 
@@ -21,7 +21,7 @@ Start an agent, then the client:
 
 cd flutter/pi_go_app
 flutter pub get
-flutter run -d macos      # or: -d chrome, -d <device>
+flutter run -d macos      # or: -d <device>
 ```
 
 The agent requires your device on its whitelist. In Forge, open the settings menu, choose **Copy device whitelist entry**, and add it to `~/.pi-go/authorized-devices.json`. See [device authentication](../../docs/security/device-authentication.md#setting-it-up).
@@ -66,6 +66,21 @@ Attach images with the picker, or paste them into the prompt on macOS, the web a
 ### Fonts
 
 Latin, Greek and Cyrillic use the system font. Fonts for other scripts are downloaded the first time such text is displayed.
+
+## Screenshots
+
+The screenshots in the main README come from the real app driving a real agent:
+
+```bash
+python3 scripts/take-screenshots.py          # a phone, in the iOS simulator
+python3 scripts/take-screenshots.py --web    # a desktop window, in Chrome
+```
+
+The script starts a demo agent with its own configuration, port and sample project, runs Forge against it, and saves the pictures in `dist/screenshots/`. Your own agent and app are not touched.
+
+- The demo agent uses Claude Code, so the run uses the account `claude` is signed in to.
+- The app is driven by `tool/screenshots/main.dart`. It rejects every request for approval, except a change to a file of the sample project.
+- `--web` opens a temporary Cloudflare tunnel, because the web client only connects over TLS. The agent still accepts only the demo device.
 
 ## Icon
 
@@ -141,6 +156,8 @@ Push needs a Firebase project. Put its `google-services.json` in `android/app/`;
 flutter run -d chrome
 flutter build web --wasm --release
 ```
+
+The web client connects only to `wss://` addresses. The agent itself serves `ws://`, so put it behind a tunnel or a proxy that provides TLS.
 
 Browsers that support it load the WebAssembly build; others fall back to JavaScript. [`s3/`](../../s3/README.md) holds the script that publishes it.
 

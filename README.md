@@ -12,6 +12,24 @@ Because whoever controls the agent controls the machine, Forge is built around t
 | Who can read the traffic? | Nobody in between; each connection has its own keys |
 | What does the notification service learn? | That a notification was sent, not what it says |
 
+<p align="center">
+  <img src="docs/images/phone-conversation.png" width="260" alt="A conversation on a phone: the agent's tool calls as folded panels, then its answer">
+  <img src="docs/images/phone-change.png" width="260" alt="A file change shown as a diff on a phone">
+  <img src="docs/images/phone-approval.png" width="260" alt="Forge asking for approval before the agent deletes a file">
+</p>
+
+<p align="center"><em>
+  On a phone: a conversation, a file change, and the safety gate asking before a file is deleted.
+</em></p>
+
+<p align="center">
+  <img src="docs/images/desktop-approval.png" width="820" alt="The same request for approval in a desktop window">
+</p>
+
+<p align="center"><em>
+  In a desktop browser. The screenshots are of the real app and a real agent; see <a href="flutter/pi_go_app/README.md#screenshots">how they are made</a>.
+</em></p>
+
 ## How it fits together
 
 ```text
@@ -79,7 +97,7 @@ chmod 600 ~/.pi-go/authorized-devices.json
 ```bash
 cd flutter/pi_go_app
 flutter pub get
-flutter run -d macos                  # or: -d chrome, -d <device>
+flutter run -d macos                  # or: -d <device>
 ```
 
 **3. Let your device in.** In Forge, open the settings menu and choose **Copy device whitelist entry**. Add the entry to the `devices` list in `~/.pi-go/authorized-devices.json` and restart the agent.
@@ -102,7 +120,7 @@ To use the agent from another machine on your network, see [running the agent](d
 | Android | A remote agent | Push, while closed |
 | macOS | A remote agent, or one the app starts itself | Push, while running |
 | Linux (Flatpak) | A remote agent | Desktop, while running |
-| Web | A remote agent | None |
+| Web | A remote agent, over `wss://` only | None |
 
 There is also a terminal client, `pi-go-tui`.
 
@@ -116,6 +134,8 @@ Building each one is described in the [client README](flutter/pi_go_app/README.m
 | [OpenAI-compatible APIs](docs/providers/openai-compatible.md) | `<name>/…` | An API key |
 | [Claude Code](docs/providers/claude-code.md) | `claude/…` | The `claude` program, signed in |
 | [Antigravity](docs/providers/antigravity.md) | `agy/…` | The `agy` program, signed in |
+
+> **Antigravity is supported but not fully tested.** Expect rough edges, and please report what you find.
 
 Claude Code and Antigravity normally run tools themselves. Forge turns that off and gives them its own tools, so every call passes the same safety gate.
 
