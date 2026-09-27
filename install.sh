@@ -14,7 +14,7 @@ set -euo pipefail
 REPO="${FORGE_REPO:-peterw22/forge}"
 # The release that this script installs. It is set to the tag of a release
 # before the release is tagged.
-RELEASE="v1.0.1-rc23"
+RELEASE="v1.0.1-rc24"
 SERVICE="${FORGE_SERVICE:-forge-agent}"
 BIN_DIR="${FORGE_BIN_DIR:-$HOME/.local/bin}"
 CONFIG_DIR="${PI_GO_CONFIG_DIR:-$HOME/.pi-go}"
