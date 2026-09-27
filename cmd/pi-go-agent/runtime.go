@@ -985,7 +985,27 @@ func (registry *runtimeRegistry) Attach(id string) (*sessionRuntime, error) {
 	return runtime, nil
 }
 func (registry *runtimeRegistry) New(from *sessionRuntime) (*sessionRuntime, error) {
-	model, thinking, workspace := from.core.Settings()
+	return registry.NewIn(from, "")
+}
+
+// NewIn creates a session that works in workspace. An empty workspace keeps
+// the one of the session it is created from.
+func (registry *runtimeRegistry) NewIn(from *sessionRuntime, workspace string) (*sessionRuntime, error) {
+	model, thinking, inherited := from.core.Settings()
+	if strings.TrimSpace(workspace) == "" {
+		workspace = inherited
+	} else {
+		chosen, err := validWorkingDirectory(workspace)
+		if err != nil {
+			return nil, err
+		}
+		if strings.HasPrefix(model, "agy/") {
+			if err := prepareAgyWorkspace(chosen); err != nil {
+				return nil, err
+			}
+		}
+		workspace = chosen
+	}
 	yolo := from.core.YOLOEnabled()
 	store, err := session.NewAt(registry.root, workspace, model, thinking)
 	if err != nil {
@@ -1318,8 +1338,18 @@ func (client *clientConnection) handle(command backendCommand) error {
 			return err
 		}
 		client.reply(backendResponse{ID: command.ID, Type: "response", Command: command.Type, Success: true, Sessions: entries, Session: runtime.id, SessionsOffset: nextOffset, SessionsHasMore: hasMore})
+	case "list_directories":
+		directory := command.Directory
+		if strings.TrimSpace(directory) == "" {
+			_, _, directory = runtime.core.Settings()
+		}
+		listing, err := listDirectories(directory)
+		if err != nil {
+			return err
+		}
+		client.reply(backendResponse{ID: command.ID, Type: "response", Command: command.Type, Success: true, Session: runtime.id, Directory: listing.path, Parent: listing.parent, Home: listing.home, Directories: listing.names, DirectoriesCut: listing.cut})
 	case "new_session":
-		next, err := client.registry.New(runtime)
+		next, err := client.registry.NewIn(runtime, command.CWD)
 		if err != nil {
 			return err
 		}

@@ -223,3 +223,40 @@ func TestListUsesLatestTurnSummary(t *testing.T) {
 		t.Fatalf("summary time = %v", entries[0].LastMessageTime)
 	}
 }
+
+func TestListReportsEachSessionsWorkingDirectory(t *testing.T) {
+	root := t.TempDir()
+	first, err := NewAt(root, "/work/first", "model", "low")
+	if err != nil {
+		t.Fatal(err)
+	}
+	moved, err := NewAt(root, "/work/second", "model", "low")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Other settings leave the directory as it is; a change replaces it.
+	if err := moved.SetYOLO(true); err != nil {
+		t.Fatal(err)
+	}
+	if err := moved.SetCWD("/work/third"); err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]string{first.ID(): "/work/first", moved.ID(): "/work/third"}
+	for _, store := range []*Store{first, moved} {
+		if err := store.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	entries, err := List(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 2 {
+		t.Fatalf("entries = %#v", entries)
+	}
+	for _, entry := range entries {
+		if entry.CWD != want[entry.ID] {
+			t.Fatalf("directory of %s = %q, want %q", entry.ID, entry.CWD, want[entry.ID])
+		}
+	}
+}

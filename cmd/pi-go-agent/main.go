@@ -320,6 +320,7 @@ type backendCommand struct {
 	Name                *string              `json:"name"`
 	Session             string               `json:"session,omitempty"`
 	CWD                 string               `json:"cwd,omitempty"`
+	Directory           string               `json:"directory,omitempty"`
 	Content             []agent.ContentBlock `json:"content,omitempty"`
 	CustomInstructions  string               `json:"customInstructions,omitempty"`
 	ApprovalID          string               `json:"approvalId,omitempty"`
@@ -376,6 +377,11 @@ type backendResponse struct {
 	ClassifierModel    string              `json:"classifierModel,omitempty"`
 	Session            string              `json:"session,omitempty"`
 	CWD                string              `json:"cwd,omitempty"`
+	Directory          string              `json:"directory,omitempty"`
+	Parent             string              `json:"parent,omitempty"`
+	Home               string              `json:"home,omitempty"`
+	Directories        []string            `json:"directories,omitempty"`
+	DirectoriesCut     bool                `json:"directoriesCut,omitempty"`
 	YOLO               *bool               `json:"yolo,omitempty"`
 	Authenticated      *bool               `json:"authenticated,omitempty"`
 	AccountID          string              `json:"accountId,omitempty"`

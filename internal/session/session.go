@@ -37,6 +37,7 @@ type Entry struct {
 	Name            *string   `json:"name"`
 	LastMessageTime time.Time `json:"lastMessageTime"`
 	Summary         string    `json:"summary"`
+	CWD             string    `json:"cwd,omitempty"`
 	Active          bool      `json:"active"`
 }
 
@@ -305,13 +306,19 @@ func readEntry(path string, entry *Entry) error {
 			CreatedAt time.Time     `json:"createdAt"`
 			Timestamp int64         `json:"timestamp"`
 			Summary   string        `json:"summary"`
+			CWD       string        `json:"cwd"`
 			Message   agent.Message `json:"message"`
 		}
 		if json.Unmarshal(scanner.Bytes(), &row) != nil {
 			continue
 		}
 		switch row.Type {
+		case "session_settings":
+			if row.CWD != "" {
+				entry.CWD = row.CWD
+			}
 		case "session":
+			entry.CWD = row.CWD
 			entry.Name = row.Name
 			if entry.LastMessageTime.IsZero() {
 				entry.LastMessageTime = row.CreatedAt
