@@ -11,7 +11,7 @@ import (
 	"os/exec"
 	"strings"
 
-	"github.com/peterw22/pi-go/internal/agent"
+	"github.com/peterw22/forge/internal/agent"
 )
 
 // CompactConversation forwards Pi Go's /compact to the CLI conversation bound

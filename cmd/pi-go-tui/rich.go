@@ -6,7 +6,7 @@ import (
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/peterw22/pi-go/internal/tui"
+	"github.com/peterw22/forge/internal/tui"
 )
 
 func (a *app) runRich() {

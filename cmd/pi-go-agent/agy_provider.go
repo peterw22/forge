@@ -12,7 +12,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/peterw22/pi-go/internal/agent"
+	"github.com/peterw22/forge/internal/agent"
 )
 
 // agyProvider handles agy's own internal turns. Never instantiate it without

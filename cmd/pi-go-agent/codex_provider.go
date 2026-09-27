@@ -16,7 +16,7 @@ import (
 	"time"
 
 	"github.com/coder/websocket"
-	"github.com/peterw22/pi-go/internal/agent"
+	"github.com/peterw22/forge/internal/agent"
 )
 
 const (

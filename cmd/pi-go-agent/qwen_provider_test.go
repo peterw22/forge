@@ -9,7 +9,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/peterw22/pi-go/internal/agent"
+	"github.com/peterw22/forge/internal/agent"
 )
 
 func TestQwenConfigurationCoexistsWithLegacyCodexAndFetchesModels(t *testing.T) {

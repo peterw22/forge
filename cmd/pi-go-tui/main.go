@@ -19,8 +19,8 @@ import (
 	"syscall"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/peterw22/pi-go/internal/session"
-	"github.com/peterw22/pi-go/internal/tui"
+	"github.com/peterw22/forge/internal/session"
+	"github.com/peterw22/forge/internal/tui"
 	"golang.org/x/term"
 )
 

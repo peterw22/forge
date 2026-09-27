@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/peterw22/pi-go/internal/agent"
+	"github.com/peterw22/forge/internal/agent"
 )
 
 // Usage recorded from a Claude Code 2.1.282 Haiku turn with one tool call.

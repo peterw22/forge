@@ -15,7 +15,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/peterw22/pi-go/internal/agent"
+	"github.com/peterw22/forge/internal/agent"
 )
 
 // Opt-in: uses the signed-in Claude account and generated, non-private images.

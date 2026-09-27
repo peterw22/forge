@@ -7,8 +7,8 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/peterw22/pi-go/internal/agent"
-	"github.com/peterw22/pi-go/internal/session"
+	"github.com/peterw22/forge/internal/agent"
+	"github.com/peterw22/forge/internal/session"
 )
 
 func TestCLITranscriptAndBindingSurviveSessionSwitch(t *testing.T) {

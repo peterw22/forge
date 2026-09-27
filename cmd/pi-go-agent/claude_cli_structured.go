@@ -10,7 +10,7 @@ import (
 	"os/exec"
 	"strings"
 
-	"github.com/peterw22/pi-go/internal/agent"
+	"github.com/peterw22/forge/internal/agent"
 )
 
 const claudeStructuredInstruction = "Return your result only as the structured output matching the supplied JSON schema. Do not return it as ordinary text or Markdown."

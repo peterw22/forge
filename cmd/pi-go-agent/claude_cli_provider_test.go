@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/peterw22/pi-go/internal/agent"
+	"github.com/peterw22/forge/internal/agent"
 )
 
 const claudeTestInit = `{"type":"system","subtype":"init","session_id":"session-1","tools":["mcp__pi-go-agent__bash","mcp__pi-go-agent__read","mcp__pi-go-agent__replace","mcp__pi-go-agent__write"],"mcp_servers":[{"name":"pi-go-agent","status":"connected"}]}`

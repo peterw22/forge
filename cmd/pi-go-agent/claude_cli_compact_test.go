@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/peterw22/pi-go/internal/agent"
+	"github.com/peterw22/forge/internal/agent"
 )
 
 const claudeCompactTestID = "1d7f9d2d-52cb-47cb-901b-795aac4e62f4"

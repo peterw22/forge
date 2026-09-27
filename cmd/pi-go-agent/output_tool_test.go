@@ -6,7 +6,7 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/peterw22/pi-go/internal/agent"
+	"github.com/peterw22/forge/internal/agent"
 )
 
 func outputEventsProvider(events []agent.ProviderEvent, streamErr error) agent.Provider {

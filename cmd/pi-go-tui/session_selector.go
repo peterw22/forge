@@ -6,7 +6,7 @@ import (
 	"unicode/utf8"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/peterw22/pi-go/internal/session"
+	"github.com/peterw22/forge/internal/session"
 )
 
 const resumeSelector = "__select__"

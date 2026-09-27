@@ -1,4 +1,4 @@
-module github.com/peterw22/pi-go
+module github.com/peterw22/forge
 
 go 1.26.6
 

@@ -16,7 +16,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/peterw22/pi-go/internal/agent"
+	"github.com/peterw22/forge/internal/agent"
 )
 
 var agyMCPClient = &http.Client{} // The turn ends on completion or explicit abort, not a fixed tool timeout.

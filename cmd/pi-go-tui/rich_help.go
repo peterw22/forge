@@ -1,7 +1,7 @@
 package main
 
 import (
-	"github.com/peterw22/pi-go/internal/tui"
+	"github.com/peterw22/forge/internal/tui"
 	"strings"
 )
 

@@ -13,9 +13,9 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/peterw22/pi-go/internal/agent"
-	systemprompt "github.com/peterw22/pi-go/internal/prompt"
-	"github.com/peterw22/pi-go/internal/session"
+	"github.com/peterw22/forge/internal/agent"
+	systemprompt "github.com/peterw22/forge/internal/prompt"
+	"github.com/peterw22/forge/internal/session"
 )
 
 const (

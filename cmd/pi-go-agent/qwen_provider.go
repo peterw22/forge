@@ -12,7 +12,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/peterw22/pi-go/internal/agent"
+	"github.com/peterw22/forge/internal/agent"
 )
 
 type qwenConfigSource func() (qwenConfig, error)

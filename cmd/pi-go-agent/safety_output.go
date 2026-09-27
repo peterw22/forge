@@ -3,7 +3,7 @@ package main
 import (
 	"errors"
 
-	"github.com/peterw22/pi-go/internal/agent"
+	"github.com/peterw22/forge/internal/agent"
 )
 
 func safetyDecisionTool() agent.Tool {

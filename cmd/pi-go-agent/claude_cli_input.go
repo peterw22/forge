@@ -6,7 +6,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/peterw22/pi-go/internal/agent"
+	"github.com/peterw22/forge/internal/agent"
 )
 
 // Claude's streaming input accepts Anthropic content blocks, not Pi Go's
