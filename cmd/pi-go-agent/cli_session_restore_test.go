@@ -96,6 +96,39 @@ func TestCLIBindingCallbacksPersistToolTranscript(t *testing.T) {
 	}
 }
 
+func TestCLIToolResultKeepsDetailsForReload(t *testing.T) {
+	root := t.TempDir()
+	store, err := session.NewAt(root, root, "claude/claude-sonnet-5", "high")
+	if err != nil {
+		t.Fatal(err)
+	}
+	core, err := agent.New(agent.Config{Model: "claude/claude-sonnet-5", WorkingDirectory: root, Provider: immediateTestProvider{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtime := newSessionRuntime(store.ID(), core, session.NewController(root, store))
+	defer runtime.close()
+	details := map[string]any{"path": "main.go", "oldText": "old", "newText": "new", "startLine": 8}
+	runtime.persistProviderToolEvent(agent.Event{Type: agent.EventToolExecutionStart, ToolCallID: "mcp-1", ToolName: "replace", Arguments: map[string]any{"path": "main.go"}})
+	runtime.persistProviderToolEvent(agent.Event{Type: agent.EventToolExecutionEnd, ToolCallID: "mcp-1", ToolName: "replace", Result: &agent.ToolResult{Content: []agent.ContentBlock{{Type: "text", Text: "Replaced one text match in main.go at line 8"}}, Details: details}})
+	_, _, messages, _, err := session.Resume(runtime.sessions.Path())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(messages) != 2 {
+		t.Fatalf("tool transcript=%#v", messages)
+	}
+	// Forge draws the diff of a reloaded replace from these details.
+	stored, ok := messages[1].ToolDetails.(map[string]any)
+	if !ok || stored["oldText"] != "old" || stored["newText"] != "new" || stored["startLine"] != float64(8) {
+		t.Fatalf("stored details=%#v", messages[1].ToolDetails)
+	}
+	live, ok := runtime.core.Snapshot().Messages[1].ToolDetails.(map[string]any)
+	if !ok || live["oldText"] != "old" {
+		t.Fatalf("live details=%#v", runtime.core.Snapshot().Messages[1].ToolDetails)
+	}
+}
+
 func TestParallelCLIProviderToolEventsKeepTranscriptConsistent(t *testing.T) {
 	root := t.TempDir()
 	store, err := session.NewAt(root, root, "claude/claude-sonnet-5", "high")

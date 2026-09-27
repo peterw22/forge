@@ -189,7 +189,7 @@ func (runtime *sessionRuntime) persistProviderToolEvent(event agent.Event) {
 			runtime.core.AppendProviderTranscriptMessage(message)
 		}
 	} else if event.Result != nil {
-		message := agent.Message{Role: agent.RoleToolResult, ToolCallID: event.ToolCallID, ToolName: event.ToolName, Timestamp: time.Now().UnixMilli(), IsError: event.IsError, Content: event.Result.Content}
+		message := agent.Message{Role: agent.RoleToolResult, ToolCallID: event.ToolCallID, ToolName: event.ToolName, Timestamp: time.Now().UnixMilli(), IsError: event.IsError, Content: event.Result.Content, ToolDetails: event.Result.Details}
 		if err := controller.Append(message, agent.Usage{}); err != nil {
 			log.Printf("persist CLI tool result: %v", err)
 		} else {
