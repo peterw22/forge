@@ -14,7 +14,7 @@ only the demo device.
 
 The demo agent uses Claude Code, so `claude` must be installed and signed in,
 and the run uses that account. The app driver rejects requests for approval,
-except changes to files of the sample project; see
+except changes to files of the sample project and running its tests; see
 flutter/pi_go_app/tool/screenshots/main.dart.
 
 Needs macOS with Xcode, Flutter and Go; --web needs Chrome and cloudflared.
@@ -61,6 +61,12 @@ SAMPLE = {
     ),
     "README.md": "# textstats\n\nSmall helpers that report statistics about a text.\n",
     "notes.txt": "scratch notes from last week\n",
+    "docs/usage.md": "# Usage\n\nCall `WordCount` with any text.\n",
+    "examples/count/main.go": (
+        "package main\n\n"
+        'import (\n\t"fmt"\n\n\t"example.com/textstats"\n)\n\n'
+        'func main() {\n\tfmt.Println(textstats.WordCount("the quick brown fox"))\n}\n'
+    ),
 }
 
 
@@ -82,6 +88,7 @@ class Agent:
         self.write("classifier.json", {"version": 1, "model": classifier})
         self.workspace.mkdir()
         for name, text in SAMPLE.items():
+            (self.workspace / name).parent.mkdir(parents=True, exist_ok=True)
             (self.workspace / name).write_text(text)
         git = ["git", "-C", str(self.workspace), "-c", "user.name=demo", "-c", "user.email=demo@example.com"]
         run(*git, "init", "-q")

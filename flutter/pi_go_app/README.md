@@ -53,7 +53,8 @@ Below 720 logical pixels the composer stacks its controls under the message and 
 - File writes shown as highlighted source, replacements as a diff.
 - Approval of operations the [safety gate](../../docs/security/safety-gate.md) holds.
 - Sessions: list, switch, create and name. `Ctrl-B` then `s` opens the list.
-- Model, thinking level, classifier model and workspace, per session.
+- A working directory for each session, chosen from the agent's directories when the session starts.
+- Model, thinking level and classifier model, per session.
 - Up to two connections at once, each with its own session.
 - Reconnects with increasing delay and reattaches to the session it left.
 - [Browser live view](../../docs/browser.md#live-view) with manual control.
@@ -79,7 +80,7 @@ python3 scripts/take-screenshots.py --web    # a desktop window, in Chrome
 The script starts a demo agent with its own configuration, port and sample project, runs Forge against it, and saves the pictures in `dist/screenshots/`. Your own agent and app are not touched.
 
 - The demo agent uses Claude Code, so the run uses the account `claude` is signed in to.
-- The app is driven by `tool/screenshots/main.dart`. It rejects every request for approval, except a change to a file of the sample project.
+- The app is driven by `tool/screenshots/main.dart`. It rejects every request for approval, except a change to a file of the sample project and running its tests.
 - `--web` opens a temporary Cloudflare tunnel, because the web client only connects over TLS. The agent still accepts only the demo device.
 
 ## Icon

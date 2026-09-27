@@ -26,6 +26,11 @@ Because whoever controls the agent controls the machine, Forge is built around t
   <img src="docs/images/desktop-approval.png" width="820" alt="The same request for approval in a desktop window">
 </p>
 
+<p align="center">
+  <img src="docs/images/phone-directory.png" width="260" alt="Choosing the directory a session works in, on a phone">
+  <img src="docs/images/desktop-change.png" width="560" alt="A file change shown as a diff in a desktop window">
+</p>
+
 <p align="center"><em>
   In a desktop browser. The screenshots are of the real app and a real agent; see <a href="flutter/pi_go_app/README.md#screenshots">how they are made</a>.
 </em></p>
@@ -57,6 +62,7 @@ Because whoever controls the agent controls the machine, Forge is built around t
 
 - Tools for reading, writing and editing files, running shell commands, driving a headless browser, and scheduling prompts.
 - Sessions that belong to the agent. Close the app and the work continues; reopen it, or open another device, and pick up where it is.
+- A working directory for each session, which you choose when the session starts.
 - Several model providers, chosen per session.
 
 **Safety**

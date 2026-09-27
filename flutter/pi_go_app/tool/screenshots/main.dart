@@ -7,8 +7,9 @@
 // message, and the picture itself, to the address in DEMO_REPORT.
 //
 // The model chooses what to do, and a demonstration must not approve what
-// nobody has read. Requests for approval are rejected, except a change to a
-// file inside the demo workspace, which can do no harm.
+// nobody has read. Requests for approval are rejected, with two exceptions
+// that can do no harm: a change to a file inside the demo workspace, and
+// running the Go tests there.
 import 'dart:async';
 import 'dart:convert';
 
@@ -140,12 +141,29 @@ final sessions = find.byWidgetPredicate(
       (widget is Text && widget.data == 'Sessions  Ctrl-B S'),
 );
 final approval = find.byKey(const ValueKey('approval-bottom-sheet'));
+final directory = find.byKey(const ValueKey('directory-path'));
 final send = find.byKey(const ValueKey('composer-send'));
 final running = find.byWidgetPredicate(
   (widget) =>
       widget.key is ValueKey<String> &&
       (widget.key! as ValueKey<String>).value.startsWith('tool-running-'),
 );
+
+/// Answers the question where a session should work, keeping the directory
+/// that is offered.
+Future<void> chooseDirectory({String? capture}) async {
+  if (!await until(
+    () => present(directory),
+    what: 'directories',
+    seconds: 20,
+  )) {
+    return;
+  }
+  if (capture != null) await shot(capture);
+  await app.tap(find.text('Use this directory'));
+  await until(() => !present(directory), what: 'directory chosen');
+  await wait(1200);
+}
 
 /// Whether the pending request is a change to a file of the demo project.
 bool harmlessEdit() {
@@ -159,6 +177,24 @@ bool harmlessEdit() {
           matching: find.textContaining('$workspace/'),
         ),
       );
+}
+
+/// Whether the pending request only runs the Go tests of the demo project.
+bool harmlessTests() {
+  final code = find.descendant(
+    of: find.byKey(const ValueKey('approval-bash-code')),
+    matching: find.byType(SelectableText),
+  );
+  if (!present(code)) return false;
+  final command = (code.evaluate().first.widget as SelectableText).textSpan!
+      .toPlainText()
+      .trim();
+  final tests = RegExp(
+    r'^(?:cd (\S+) && )?go test [\w./ -]*$',
+  ).firstMatch(command);
+  if (tests == null) return false;
+  final target = tests.group(1);
+  return target == null || target == workspace;
 }
 
 Future<void> prompt(String text) async {
@@ -180,7 +216,10 @@ Future<void> followTurn(String name, {int seconds = 420}) async {
         sawApproval = true;
         await shot('$name-approval');
       }
-      if (harmlessEdit()) {
+      if (harmlessTests()) {
+        say('approving the Go tests of the demo workspace');
+        await app.tap(find.byKey(const ValueKey('approval-approve')));
+      } else if (harmlessEdit()) {
         say('approving a file change in the demo workspace');
         await app.tap(find.byKey(const ValueKey('approval-approve')));
       } else {
@@ -269,7 +308,8 @@ Future<void> walkThrough() async {
     say('failed could not connect');
     return;
   }
-  await wait(2500);
+  await wait(1500);
+  await chooseDirectory(capture: 'directory');
 
   await prompt(taskPrompt);
   await followTurn('task');
@@ -296,7 +336,8 @@ Future<void> walkThrough() async {
   await app.tap(sessions.first);
   await until(() => present(find.text('New session')), what: 'sessions');
   await app.tap(find.text('New session'));
-  await wait(2500);
+  await chooseDirectory();
+  await wait(1500);
 
   await prompt(riskyPrompt);
   await followTurn('risky', seconds: 240);
