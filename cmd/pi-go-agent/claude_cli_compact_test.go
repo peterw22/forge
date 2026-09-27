@@ -56,6 +56,7 @@ func TestParseClaudeCompactStream(t *testing.T) {
 }
 
 func TestAgentCompactForwardsToClaude(t *testing.T) {
+	stubClaudeOnPath(t)
 	workspace := t.TempDir()
 	record := t.TempDir()
 	binary := filepath.Join(t.TempDir(), "claude")
@@ -107,6 +108,7 @@ func TestAgentCompactForwardsToClaude(t *testing.T) {
 }
 
 func TestCompactConversationRouting(t *testing.T) {
+	stubClaudeOnPath(t)
 	router := &providerRouter{claude: (*claudeCLIProvider)(nil)}
 	for model, wantHandled := range map[string]bool{"gpt-5.6-luna": false, "qwen/qwen-coder": false, "claude/claude-sonnet-5": true, "agy/gemini-3.8-flash-low": true} {
 		_, handled, err := router.CompactConversation(context.Background(), agent.Request{Model: model}, "")

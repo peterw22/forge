@@ -14,6 +14,7 @@ import (
 // commentary, so its conversation ID must be saved too; otherwise every later
 // turn fails with "Claude conversation ID missing".
 func TestClaudeInterruptedTurnSavesConversation(t *testing.T) {
+	stubClaudeOnPath(t)
 	binary := filepath.Join(t.TempDir(), "claude")
 	script := "#!/bin/sh\nprintf '%s\\n' '" + claudeTestInit + "' '{\"type\":\"stream_event\",\"event\":{\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"I will look.\"}}}'\nexit 1\n"
 	if err := os.WriteFile(binary, []byte(script), 0700); err != nil {

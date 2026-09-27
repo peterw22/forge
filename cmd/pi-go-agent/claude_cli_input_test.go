@@ -74,6 +74,7 @@ func TestClaudeCLIUserInput(t *testing.T) {
 }
 
 func TestClaudeCLIImagePromptOnStdin(t *testing.T) {
+	stubClaudeOnPath(t)
 	dir := t.TempDir()
 	binary := filepath.Join(dir, "claude")
 	argsPath, inputPath := filepath.Join(dir, "args"), filepath.Join(dir, "input")

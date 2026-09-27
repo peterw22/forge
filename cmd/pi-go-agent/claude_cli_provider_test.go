@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -10,7 +12,19 @@ import (
 
 const claudeTestInit = `{"type":"system","subtype":"init","session_id":"session-1","tools":["mcp__pi-go-agent__bash","mcp__pi-go-agent__read","mcp__pi-go-agent__replace","mcp__pi-go-agent__write"],"mcp_servers":[{"name":"pi-go-agent","status":"connected"}]}`
 
+// stubClaudeOnPath puts a claude that reports no models first on PATH, so model
+// checks use the pinned list on a machine without Claude Code.
+func stubClaudeOnPath(t *testing.T) {
+	t.Helper()
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "claude"), []byte("#!/bin/sh\nexit 0\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+}
+
 func TestClaudeRejectsOffAndMinimalEffort(t *testing.T) {
+	stubClaudeOnPath(t)
 	p := newClaudeCLIProvider("unused")
 	for _, level := range []string{"off", "minimal", ""} {
 		req := agent.Request{Model: "claude/claude-sonnet-5", Thinking: level, SessionID: "session", WorkingDirectory: t.TempDir(), ToolGuard: agyDenyGuard{}, OnToolEvent: func(agent.Event) {}, Messages: []agent.Message{{Role: agent.RoleUser, Content: []agent.ContentBlock{{Type: "text", Text: "hello"}}}}}

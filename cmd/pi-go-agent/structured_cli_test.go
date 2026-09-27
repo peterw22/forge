@@ -73,6 +73,7 @@ func TestParseClaudeStructuredStream(t *testing.T) {
 }
 
 func TestClaudeCompleteStructuredUsesStdinPrivateDirAndNoPersistence(t *testing.T) {
+	stubClaudeOnPath(t)
 	config := t.TempDir()
 	t.Setenv("PI_GO_CONFIG_DIR", config)
 	record := t.TempDir()

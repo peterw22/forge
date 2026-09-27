@@ -54,6 +54,7 @@ func TestClaudeCatalogAndRouting(t *testing.T) {
 }
 
 func TestClaudeResumesPersistedConversationID(t *testing.T) {
+	stubClaudeOnPath(t)
 	binary := filepath.Join(t.TempDir(), "claude")
 	argsFile := filepath.Join(t.TempDir(), "args")
 	script := "#!/bin/sh\nprintf '%s\\n' \"$*\" > '" + argsFile + "'\nprintf '%s\\n' '{\"type\":\"system\",\"subtype\":\"init\",\"session_id\":\"11111111-2222-3333-4444-555555555555\",\"tools\":[\"mcp__pi-go-agent__bash\",\"mcp__pi-go-agent__read\",\"mcp__pi-go-agent__replace\",\"mcp__pi-go-agent__write\"],\"mcp_servers\":[{\"name\":\"pi-go-agent\",\"status\":\"connected\"}]}' '{\"type\":\"result\",\"subtype\":\"success\",\"session_id\":\"11111111-2222-3333-4444-555555555555\",\"result\":\"ok\"}'\n"
@@ -94,6 +95,7 @@ func TestClaudeResumesPersistedConversationID(t *testing.T) {
 }
 
 func TestClaudeFakeCLIResumesWithMCPOnlyFlags(t *testing.T) {
+	stubClaudeOnPath(t)
 	binary := filepath.Join(t.TempDir(), "claude")
 	calls := filepath.Join(t.TempDir(), "args")
 	script := "#!/bin/sh\nprintf '%s' \"$*\" | tr '\\n' ' ' >> '" + calls + "'\nprintf '\\n' >> '" + calls + "'\nprintf '%s\\n' '" + claudeTestInit + "' '{\"type\":\"stream_event\",\"event\":{\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"ok\"}}}' '{\"type\":\"result\",\"subtype\":\"success\",\"session_id\":\"session-1\",\"result\":\"ok\"}'\n"
