@@ -2,6 +2,7 @@
   "name": "forge-worker-push",
   "version": "0.1.0",
   "private": true,
+  "license": "GPL-3.0-only",
   "type": "module",
   "description": "Authenticated Forge device/agent pairing and APNs push relay",
   "scripts": {

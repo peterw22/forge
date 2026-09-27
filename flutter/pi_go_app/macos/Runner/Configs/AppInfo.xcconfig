@@ -11,4 +11,4 @@ PRODUCT_NAME = Forge
 PRODUCT_BUNDLE_IDENTIFIER = com.tingouw.forge
 
 // The copyright displayed in application information
-PRODUCT_COPYRIGHT = Copyright © 2026 Tingouw. All rights reserved.
+PRODUCT_COPYRIGHT = Copyright © 2026 Tingouw. Licensed under the GNU GPL version 3.
