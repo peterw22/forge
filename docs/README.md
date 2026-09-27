@@ -7,6 +7,7 @@
 | [Running the agent](agent.md) | Building, starting and configuring `pi-go-agent` |
 | [Architecture](architecture.md) | How the parts fit together |
 | [Running your own deployment](deployment.md) | Building and publishing the clients and the relay yourself |
+| [Releasing the agent](releasing.md) | The workflow that builds, signs and publishes `pi-go-agent` |
 
 ## Security
 
