@@ -67,6 +67,16 @@ Attach images with the picker, or paste them into the prompt on macOS, the web a
 
 Latin, Greek and Cyrillic use the system font. Fonts for other scripts are downloaded the first time such text is displayed.
 
+## Icon
+
+The icon is drawn by `scripts/generate-icons.py`, which writes it in every size the platforms need and keeps a copy in `design/icon/`. Change the drawing in the script, then run:
+
+```bash
+python3 scripts/generate-icons.py
+```
+
+It needs Chrome or Chromium, and macOS for `sips`.
+
 ## macOS
 
 ```bash
