@@ -186,6 +186,7 @@ Deployment is described in [`worker-push/README.md`](../../worker-push/README.md
 | `worker-push/test/relay.test.ts` | A browser from registration to delivery, on a database with every migration applied |
 | `flutter/pi_go_app/test/forge_push_test.mjs` | Decryption in the service worker, of an envelope the agent encrypted |
 | `flutter/pi_go_app/test/web_push_test.dart` | The content key and the tap on a notification, in a browser |
+| `scripts/test-web-push.cjs` | The whole path in Chrome, with a relay and an agent of its own: permission, pairing, a notification for a turn that ended, a tap, and a push that cannot be read |
 | `cmd/pi-go-agent/push_content_crypto_test.go` | Content encryption and its binding to agent, device and event |
 | `cmd/pi-go-agent/push_authorization_test.go` | Listing and revoking authorizations |
 

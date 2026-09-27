@@ -195,7 +195,12 @@ The key that decrypts is kept by the browser and cannot be exported, but no hard
 ```bash
 node --test test/forge_push_test.mjs
 flutter test --platform chrome test/web_push_test.dart
+flutter test --platform chrome --wasm test/web_push_test.dart test/web_identity_test.dart
 ```
+
+Chrome runs Forge compiled to WebAssembly and Safari compiled to JavaScript, and the two differ in how a list of bytes reaches the browser, so the tests of the web client run under both.
+
+`node scripts/test-web-push.cjs` tests the whole path in a demo of its own: a relay with its own database and key, an agent with its own configuration, and Chrome with an empty profile. The web client turns notifications on, pairs, and has the agent finish a turn; the notification travels through the push service of Chrome to the service worker. The run uses Claude Code for one short turn.
 
 Android does not keep a connection open in the background. After **Force stop** in Android's settings, push is off until Forge is opened again.
 

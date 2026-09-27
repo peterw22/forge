@@ -1,16 +1,16 @@
-importScripts('./forge_push.js?v=14');
+importScripts('./forge_push.js?v=15');
 
-const CACHE_NAME = 'forge-web-v14';
+const CACHE_NAME = 'forge-web-v15';
 const APP_SHELL = [
   './',
   './index.html',
-  './flutter_bootstrap.js?v=14',
+  './flutter_bootstrap.js?v=15',
   './flutter.js',
-  './forge_push.js?v=14',
+  './forge_push.js?v=15',
   // The WebAssembly build runs where supported; main.dart.js is the fallback.
-  './main.dart.wasm?v=14',
-  './main.dart.mjs?v=14',
-  './main.dart.js?v=14',
+  './main.dart.wasm?v=15',
+  './main.dart.mjs?v=15',
+  './main.dart.js?v=15',
   './manifest.json',
   './version.json',
   './favicon.png',
@@ -149,8 +149,10 @@ async function openForge(tap) {
   const windows = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
   for (const client of windows) {
     if ('focus' in client) {
-      await client.focus();
+      // Forge is told first, so that it learns of the tap where the browser
+      // refuses to bring its window forward.
       client.postMessage({ type: 'forge-notification-tap' });
+      await client.focus();
       return;
     }
   }
