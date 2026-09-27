@@ -37,7 +37,7 @@ func main() {
 	var resume bool
 	var listenAddress string
 	var allowRemote bool
-	var authLogin, authLogout, printIdentity bool
+	var authLogin, authLogout, printIdentity, authorize bool
 	var authorizedDevices string
 	flag.StringVar(&prompt, "prompt", "", "prompt to run")
 	flag.BoolVar(&serve, "serve", false, "run the JSONL agent-backend server")
@@ -48,12 +48,20 @@ func main() {
 	flag.BoolVar(&authLogin, "login", false, "sign in to OpenAI Codex using the OAuth device flow")
 	flag.BoolVar(&authLogout, "logout", false, "remove stored OpenAI Codex credentials")
 	flag.BoolVar(&printIdentity, "print-identity", false, "print the server P-256 identity and exit")
+	flag.BoolVar(&authorize, "authorize-device", false, "add the device entry that Forge copies, read from standard input, to the device whitelist and exit")
 	flag.StringVar(&authorizedDevices, "authorized-devices", "", "device whitelist for network listeners (default: $PI_GO_CONFIG_DIR/authorized-devices.json or ~/.pi-go/authorized-devices.json)")
 	flag.StringVar(&model, "model", "gpt-5.6-terra", "Codex model ID")
 	flag.StringVar(&thinking, "thinking", "high", "thinking level: off, minimal, low, medium, high, xhigh, max")
 	flag.StringVar(&systemPrompt, "system-prompt", "", "system prompt (defaults to the Pi Go coding-agent prompt)")
 	flag.StringVar(&cwd, "cwd", "", "working directory for built-in tools")
 	flag.Parse()
+	if authorize {
+		if err := runAuthorizeDevice(authorizedDevices, os.Stdin, os.Stdout); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		return
+	}
 	if prompt == "" && !serve && listenAddress == "" && !authLogin && !authLogout && !printIdentity {
 		fmt.Fprintln(os.Stderr, "--prompt must not be empty unless --serve is used")
 		os.Exit(2)
