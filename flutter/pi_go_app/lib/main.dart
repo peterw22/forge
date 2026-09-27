@@ -281,8 +281,28 @@ class AgentConnection extends ChangeNotifier {
   int output = 0;
   int total = 0;
   int contextUsed = 0;
+  int _reportedContextWindow = 0;
+  String _reportedContextWindowModel = '';
   String upstreamTransport = '—';
   String currentModel = 'gpt-5.6-terra';
+
+  /// The provider-reported window for the current model, else a default.
+  int get contextWindow {
+    if (_reportedContextWindow > 0 &&
+        _reportedContextWindowModel == currentModel) {
+      return _reportedContextWindow;
+    }
+    if (currentModel.startsWith('claude/')) return 200000;
+    if (currentModel == 'gpt-5.3-codex-spark') return 128000;
+    return 272000;
+  }
+
+  void _setContextWindow(dynamic window) {
+    if (window is! int || window <= 0) return;
+    _reportedContextWindow = window;
+    _reportedContextWindowModel = currentModel;
+  }
+
   String currentThinking = 'high';
   String classifierModel = 'gpt-5.6-luna';
   String currentCWD = '';
@@ -1257,6 +1277,7 @@ class AgentConnection extends ChangeNotifier {
     if (compactedContext is int && compactedContext > 0) {
       contextUsed = compactedContext;
     }
+    _setContextWindow(state['ContextWindow'] ?? state['contextWindow']);
   }
 
   void _event(Map<String, dynamic> event) {
@@ -1324,8 +1345,13 @@ class AgentConnection extends ChangeNotifier {
           _activeAssistantIndex = null;
           _assistantTextBeforeTool = '';
           _latestAssistantText = '';
+          // Commentary finished before an MCP tool carries no usage; only the
+          // turn's final assistant message reports it.
           final usage = event['usage'];
-          if (usage is Map<String, dynamic>) _setUsage(usage);
+          if (usage is Map<String, dynamic> &&
+              usage.values.any((value) => value is int && value != 0)) {
+            _setUsage(usage);
+          }
         }
       case 'tool_execution_start':
         // An MCP tool can run between two text blocks of one provider turn.
@@ -1481,7 +1507,15 @@ class AgentConnection extends ChangeNotifier {
       output += number('output', 'Output');
       final turnTotal = number('totalTokens', 'TotalTokens');
       total += turnTotal;
-      contextUsed = turnTotal > 0 ? turnTotal : turnInput;
+      // CLI providers sum usage over a turn's API calls, so they report the
+      // context size separately.
+      final turnContext = number('contextTokens', 'ContextTokens');
+      contextUsed = turnContext > 0
+          ? turnContext
+          : turnTotal > 0
+          ? turnTotal
+          : turnInput;
+      _setContextWindow(usage['contextWindow'] ?? usage['ContextWindow']);
     }
   }
 
@@ -5231,7 +5265,9 @@ class _AgentPageState extends State<AgentPage> with WidgetsBindingObserver {
                               Text('in ${agent.input}'),
                               Text('cache ${agent.cacheRead}'),
                               Text('out ${agent.output}'),
-                              Text('context ${agent.contextUsed}/272000'),
+                              Text(
+                                'context ${agent.contextUsed}/${agent.contextWindow}',
+                              ),
                               Text('upstream ${agent.upstreamTransport}'),
                             ]
                             .map(

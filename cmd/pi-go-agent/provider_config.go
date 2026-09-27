@@ -463,8 +463,12 @@ func configuredModels(auth *codexAuthManager) ([]modelInfo, error) {
 		}
 	}
 	if binary, err := exec.LookPath("claude"); err == nil && binary != "" {
-		for _, id := range []string{"claude-opus-5-5", "claude-sonnet-5", "claude-haiku-4-5-20251001"} {
-			models = append(models, modelInfo{ID: "claude/" + id, Provider: "claude", Label: "Claude Code · " + id})
+		for _, model := range claudeModels(context.Background(), binary) {
+			label := "Claude Code · " + model.Name
+			if model.Name != model.ID {
+				label += " · " + model.ID
+			}
+			models = append(models, modelInfo{ID: "claude/" + model.ID, Provider: "claude", Label: label})
 		}
 	}
 	return models, nil

@@ -163,8 +163,10 @@ func main() {
 		if selectedThinking == "" {
 			selectedThinking = thinking
 		}
-		if strings.HasPrefix(selectedModel, "claude/") && !claudeEffortAllowed(selectedThinking) {
-			return nil, errors.New("Claude thinking effort must be low, medium, high, xhigh, or max (off and minimal are unsupported)")
+		if claudeModel, ok := strings.CutPrefix(selectedModel, "claude/"); ok {
+			if err := claudeModelEffortError(claudeModel, selectedThinking); err != nil {
+				return nil, err
+			}
 		}
 		if strings.HasPrefix(selectedModel, "agy/") {
 			if agyProviderInstance == nil {

@@ -607,8 +607,8 @@ func (runtime *sessionRuntime) setModel(model string) error {
 			return errors.New("unsupported Claude model")
 		}
 		_, level, _ := runtime.core.Settings()
-		if !claudeEffortAllowed(level) {
-			return errors.New("Claude thinking effort must be low, medium, high, xhigh, or max; set thinking first")
+		if err := claudeModelEffortError(strings.TrimPrefix(model, "claude/"), level); err != nil {
+			return fmt.Errorf("%w; set thinking first", err)
 		}
 	}
 	runtime.mu.Lock()
@@ -646,8 +646,10 @@ func (runtime *sessionRuntime) setThinking(level string) error {
 		return errors.New("invalid thinking level")
 	}
 	model, _, _ := runtime.core.Settings()
-	if strings.HasPrefix(model, "claude/") && !claudeEffortAllowed(level) {
-		return errors.New("Claude thinking effort must be low, medium, high, xhigh, or max (off and minimal are unsupported)")
+	if claudeModel, ok := strings.CutPrefix(model, "claude/"); ok {
+		if err := claudeModelEffortError(claudeModel, level); err != nil {
+			return err
+		}
 	}
 	runtime.mu.Lock()
 	defer runtime.mu.Unlock()

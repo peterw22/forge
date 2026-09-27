@@ -26,8 +26,8 @@ func (p *claudeCLIProvider) CompleteStructured(ctx context.Context, req agent.Re
 	if !ok || !claudeModelAllowed(model) {
 		return nil, errors.New("unsupported Claude model")
 	}
-	if !claudeEffortAllowed(req.Thinking) {
-		return nil, errors.New("Claude thinking effort must be low, medium, high, xhigh, or max")
+	if err := claudeModelEffortError(model, req.Thinking); err != nil {
+		return nil, err
 	}
 	input, schema, err := structuredRequestInput(req)
 	if err != nil {

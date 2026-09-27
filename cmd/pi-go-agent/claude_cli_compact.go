@@ -64,7 +64,7 @@ func (p *claudeCLIProvider) compactConversation(ctx context.Context, req agent.R
 		prompt += " " + custom
 	}
 	args := []string{"--print", "--model", model, "--output-format", "stream-json", "--verbose", "--tools", "", "--restricted", "--strict-mcp-config", "--mcp-config", `{"mcpServers":{}}`, "--setting-sources", "", "--permission-mode", "dontAsk", "--resume", conversation}
-	if claudeEffortAllowed(req.Thinking) {
+	if claudeModelEffortError(model, req.Thinking) == nil {
 		args = append(args, "--effort", req.Thinking)
 	}
 	args = append(args, prompt)
@@ -126,13 +126,8 @@ func parseClaudeCompactStream(ctx context.Context, reader io.Reader, conversatio
 			Message struct {
 				Content json.RawMessage `json:"content"`
 			} `json:"message"`
-			IsError bool `json:"is_error"`
-			Usage   struct {
-				Input      int `json:"input_tokens"`
-				Output     int `json:"output_tokens"`
-				CacheRead  int `json:"cache_read_input_tokens"`
-				CacheWrite int `json:"cache_creation_input_tokens"`
-			} `json:"usage"`
+			IsError bool        `json:"is_error"`
+			Usage   claudeUsage `json:"usage"`
 		}
 		if err := json.Unmarshal(scanner.Bytes(), &msg); err != nil {
 			return agent.ProviderCompaction{}, fmt.Errorf("decode Claude event: %w", err)
@@ -173,8 +168,7 @@ func parseClaudeCompactStream(ctx context.Context, reader io.Reader, conversatio
 			if !boundary || result.Summary == "" {
 				return agent.ProviderCompaction{}, errors.New("Claude did not compact the conversation")
 			}
-			u := msg.Usage
-			result.Usage = agent.Usage{Input: u.Input, Output: u.Output, CacheRead: u.CacheRead, CacheWrite: u.CacheWrite, TotalTokens: u.Input + u.Output + u.CacheRead + u.CacheWrite}
+			result.Usage = msg.Usage.agentUsage()
 			done = true
 		}
 	}

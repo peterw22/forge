@@ -53,8 +53,8 @@ func (p *claudeCLIProvider) stream(ctx context.Context, req agent.Request, event
 	if !ok || !claudeModelAllowed(model) {
 		return errors.New("unsupported Claude model")
 	}
-	if !claudeEffortAllowed(req.Thinking) {
-		return errors.New("Claude thinking effort must be low, medium, high, xhigh, or max (off and minimal are unsupported)")
+	if err := claudeModelEffortError(model, req.Thinking); err != nil {
+		return err
 	}
 	if len(req.Messages) == 0 || req.Messages[len(req.Messages)-1].Role != agent.RoleUser {
 		return errors.New("Claude requires a user turn")
@@ -158,12 +158,20 @@ func claudeEffortAllowed(level string) bool {
 	return false
 }
 
-func claudeModelAllowed(model string) bool {
-	switch model {
-	case "claude-opus-5-5", "claude-sonnet-5", "claude-haiku-4-5-20251001":
-		return true
-	}
-	return false
+// claudeUsage is Anthropic usage, whose input_tokens exclude cache reads and
+// writes. A result's usage sums every API call of the turn.
+type claudeUsage struct {
+	Input      int `json:"input_tokens"`
+	Output     int `json:"output_tokens"`
+	CacheRead  int `json:"cache_read_input_tokens"`
+	CacheWrite int `json:"cache_creation_input_tokens"`
+}
+
+// agentUsage uses the OpenAI convention of the other providers: input
+// includes cached and cache-written tokens.
+func (u claudeUsage) agentUsage() agent.Usage {
+	input := u.Input + u.CacheRead + u.CacheWrite
+	return agent.Usage{Input: input, Output: u.Output, CacheRead: u.CacheRead, CacheWrite: u.CacheWrite, TotalTokens: input + u.Output}
 }
 
 func parseClaudeCLIStream(ctx context.Context, reader io.Reader, events chan<- agent.ProviderEvent, save func(string), onVerified ...func(bool)) error {
@@ -189,6 +197,9 @@ func parseClaudeCLIStream(ctx context.Context, reader io.Reader, events chan<- a
 		text.WriteString(delta)
 		events <- agent.ProviderEvent{Type: agent.ProviderTextDelta, Delta: delta}
 	}
+	// The context after the turn is the last API call's prompt plus output,
+	// not the turn-wide sum in the result.
+	var lastCall claudeUsage
 	initialized, done := false, false
 	for scanner.Scan() {
 		if err := ctx.Err(); err != nil {
@@ -216,16 +227,18 @@ func parseClaudeCLIStream(ctx context.Context, reader io.Reader, events chan<- a
 					Text     string `json:"text"`
 					Thinking string `json:"thinking"`
 				} `json:"delta"`
+				Message struct {
+					Usage claudeUsage `json:"usage"`
+				} `json:"message"`
+				Usage *claudeUsage `json:"usage"`
 			} `json:"event"`
 			Result            string            `json:"result"`
 			IsError           bool              `json:"is_error"`
 			PermissionDenials []json.RawMessage `json:"permission_denials"`
-			Usage             struct {
-				Input      int `json:"input_tokens"`
-				Output     int `json:"output_tokens"`
-				CacheRead  int `json:"cache_read_input_tokens"`
-				CacheWrite int `json:"cache_creation_input_tokens"`
-			} `json:"usage"`
+			Usage             claudeUsage       `json:"usage"`
+			ModelUsage        map[string]struct {
+				ContextWindow int `json:"contextWindow"`
+			} `json:"modelUsage"`
 		}
 		if err := json.Unmarshal(scanner.Bytes(), &msg); err != nil {
 			return fmt.Errorf("decode Claude event: %w", err)
@@ -258,6 +271,12 @@ func parseClaudeCLIStream(ctx context.Context, reader io.Reader, events chan<- a
 			if !initialized {
 				return errors.New("Claude streamed before tool boundary verification")
 			}
+			if msg.Event.Type == "message_start" {
+				lastCall = msg.Event.Message.Usage
+			}
+			if msg.Event.Type == "message_delta" && msg.Event.Usage != nil {
+				lastCall = *msg.Event.Usage
+			}
 			if msg.Event.Type == "message_start" || (msg.Event.Type == "content_block_start" && msg.Event.ContentBlock.Type == "tool_use") {
 				finalSegment.Reset()
 				pendingBoundary = true
@@ -286,8 +305,12 @@ func parseClaudeCLIStream(ctx context.Context, reader io.Reader, events chan<- a
 			}
 			done = true
 			save(session)
-			u := msg.Usage
-			events <- agent.ProviderEvent{Type: agent.ProviderDone, StopReason: "stop", Usage: agent.Usage{Input: u.Input, Output: u.Output, CacheRead: u.CacheRead, CacheWrite: u.CacheWrite, TotalTokens: u.Input + u.Output + u.CacheRead + u.CacheWrite}}
+			usage := msg.Usage.agentUsage()
+			usage.ContextTokens = lastCall.agentUsage().TotalTokens
+			for _, model := range msg.ModelUsage {
+				usage.ContextWindow = max(usage.ContextWindow, model.ContextWindow)
+			}
+			events <- agent.ProviderEvent{Type: agent.ProviderDone, StopReason: "stop", Usage: usage}
 		}
 	}
 	if err := scanner.Err(); err != nil {

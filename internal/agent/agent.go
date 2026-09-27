@@ -129,6 +129,10 @@ type Usage struct {
 	CacheRead   int `json:"cacheRead"`
 	CacheWrite  int `json:"cacheWrite"`
 	TotalTokens int `json:"totalTokens"`
+	// ContextTokens and ContextWindow describe the conversation after this
+	// response, when a provider reports them; they are not summed.
+	ContextTokens int `json:"contextTokens,omitempty"`
+	ContextWindow int `json:"contextWindow,omitempty"`
 }
 
 type Provider interface {
@@ -217,6 +221,7 @@ type State struct {
 	Streaming         bool      `json:"streaming"`
 	Usage             Usage     `json:"usage"`
 	ContextTokens     int       `json:"contextTokens"`
+	ContextWindow     int       `json:"contextWindow,omitempty"`
 	UpstreamTransport string    `json:"upstreamTransport,omitempty"`
 	YOLO              bool      `json:"yolo"`
 }
@@ -277,6 +282,9 @@ func (a *Agent) CloseProviderSession() {
 func (a *Agent) SetModel(model string) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	if a.config.Model != model {
+		a.state.ContextWindow = 0 // reported for the previous model
+	}
 	a.config.Model = model
 }
 
@@ -370,11 +378,15 @@ func (a *Agent) RunContent(ctx context.Context, content []ContentBlock, emit fun
 		}
 		a.appendMessage(assistant)
 		a.addUsage(usage)
-		contextTokens := usage.TotalTokens
+		contextTokens := usage.ContextTokens
+		if contextTokens == 0 {
+			contextTokens = usage.TotalTokens
+		}
 		if contextTokens == 0 {
 			contextTokens = usage.Input
 		}
 		a.setContextTokens(contextTokens)
+		a.setContextWindow(usage.ContextWindow)
 		emit(Event{Type: EventMessageEnd, Message: &assistant, Usage: usage, StopReason: stopReason})
 
 		toolResults, err := a.executeTools(ctx, toolCalls, emit)
@@ -400,10 +412,28 @@ func (a *Agent) runProvider(ctx context.Context, emit func(Event)) (Message, []C
 	model, thinking, systemPrompt, sessionID, tools := a.config.Model, a.config.Thinking, a.config.SystemPrompt, a.config.SessionID, append([]Tool(nil), a.config.Tools...)
 	yolo := a.config.YOLO
 	a.mu.RUnlock()
-	request := Request{Model: model, Thinking: thinking, SystemPrompt: systemPrompt, Messages: a.Snapshot().Messages, Tools: tools, SessionID: sessionID, WorkingDirectory: a.config.WorkingDirectory, ToolGuard: a.config.ToolGuard, YOLO: yolo, OnToolEvent: emit, SaveProviderConversation: a.config.SaveProviderConversation, LoadProviderConversation: a.config.LoadProviderConversation}
+	request := Request{Model: model, Thinking: thinking, SystemPrompt: systemPrompt, Messages: a.Snapshot().Messages, Tools: tools, SessionID: sessionID, WorkingDirectory: a.config.WorkingDirectory, ToolGuard: a.config.ToolGuard, YOLO: yolo, SaveProviderConversation: a.config.SaveProviderConversation, LoadProviderConversation: a.config.LoadProviderConversation}
+	onTool := emit
 	if a.config.OnProviderToolEvent != nil {
 		callback := a.config.OnProviderToolEvent
-		request.OnToolEvent = func(event Event) { callback(event); emit(event) }
+		onTool = func(event Event) { callback(event); emit(event) }
+	}
+	// CLI providers run MCP tools inside one streamed turn. Before a tool
+	// starts, finish the text streamed so far as its own assistant message so
+	// the live and persisted transcripts keep the tool between text segments.
+	boundaries := make(chan chan struct{})
+	finished := make(chan struct{})
+	defer close(finished)
+	request.OnToolEvent = func(event Event) {
+		if event.Type == EventToolExecutionStart {
+			done := make(chan struct{})
+			select {
+			case boundaries <- done:
+				<-done
+			case <-finished:
+			}
+		}
+		onTool(event)
 	}
 	request.GuardTool = func(ctx context.Context, call ContentBlock) GuardDecision { return a.guardTool(ctx, call, emit) }
 	events, providerErr := a.config.Provider.Stream(ctx, request)
@@ -412,47 +442,81 @@ func (a *Agent) runProvider(ctx context.Context, emit func(Event)) (Message, []C
 	var calls []ContentBlock
 	var stopReason string
 	var usage Usage
+	handle := func(event ProviderEvent) error {
+		switch event.Type {
+		case ProviderThinkingDelta:
+			if len(assistant.Content) == 0 || assistant.Content[len(assistant.Content)-1].Type != "thinking" {
+				assistant.Content = append(assistant.Content, ContentBlock{Type: "thinking"})
+			}
+			last := len(assistant.Content) - 1
+			assistant.Content[last].Text += event.Delta
+			emit(Event{Type: EventMessageUpdate, Message: &assistant})
+		case ProviderTransport:
+			a.setUpstreamTransport(event.Transport)
+			emit(Event{Type: EventUpstreamTransport, UpstreamTransport: event.Transport})
+		case ProviderTextDelta:
+			if len(assistant.Content) == 0 || assistant.Content[len(assistant.Content)-1].Type != "text" {
+				assistant.Content = append(assistant.Content, ContentBlock{Type: "text"})
+			}
+			last := len(assistant.Content) - 1
+			assistant.Content[last].Text += event.Delta
+			emit(Event{Type: EventMessageUpdate, Message: &assistant})
+		case ProviderToolCall:
+			if event.ToolCall.Type != "toolCall" || event.ToolCall.ID == "" || event.ToolCall.Name == "" {
+				return errors.New("provider emitted invalid tool call")
+			}
+			assistant.Content = append(assistant.Content, event.ToolCall)
+			calls = append(calls, event.ToolCall)
+			emit(Event{Type: EventMessageUpdate, Message: &assistant})
+		case ProviderDone:
+			stopReason, usage = event.StopReason, event.Usage
+		case ProviderError:
+			if event.Err != nil {
+				return event.Err
+			}
+			return errors.New("provider stream failed")
+		}
+		return nil
+	}
 	for events != nil || providerErr != nil {
 		select {
 		case <-ctx.Done():
 			return Message{}, nil, "aborted", Usage{}, ctx.Err()
+		case done := <-boundaries:
+			// The tool cannot finish until done closes, so everything already
+			// queued was streamed before it.
+			var err error
+		drain:
+			for events != nil && err == nil {
+				select {
+				case event, ok := <-events:
+					if !ok {
+						events = nil
+						continue
+					}
+					err = handle(event)
+				default:
+					break drain
+				}
+			}
+			if err == nil && len(assistant.Content) > 0 {
+				segment := assistant
+				a.appendMessage(segment)
+				emit(Event{Type: EventMessageEnd, Message: &segment})
+				assistant = Message{Role: RoleAssistant, Timestamp: time.Now().UnixMilli()}
+				emit(Event{Type: EventMessageStart, Message: &assistant})
+			}
+			close(done)
+			if err != nil {
+				return Message{}, nil, "error", Usage{}, err
+			}
 		case event, ok := <-events:
 			if !ok {
 				events = nil
 				continue
 			}
-			switch event.Type {
-			case ProviderThinkingDelta:
-				if len(assistant.Content) == 0 || assistant.Content[len(assistant.Content)-1].Type != "thinking" {
-					assistant.Content = append(assistant.Content, ContentBlock{Type: "thinking"})
-				}
-				last := len(assistant.Content) - 1
-				assistant.Content[last].Text += event.Delta
-				emit(Event{Type: EventMessageUpdate, Message: &assistant})
-			case ProviderTransport:
-				a.setUpstreamTransport(event.Transport)
-				emit(Event{Type: EventUpstreamTransport, UpstreamTransport: event.Transport})
-			case ProviderTextDelta:
-				if len(assistant.Content) == 0 || assistant.Content[len(assistant.Content)-1].Type != "text" {
-					assistant.Content = append(assistant.Content, ContentBlock{Type: "text"})
-				}
-				last := len(assistant.Content) - 1
-				assistant.Content[last].Text += event.Delta
-				emit(Event{Type: EventMessageUpdate, Message: &assistant})
-			case ProviderToolCall:
-				if event.ToolCall.Type != "toolCall" || event.ToolCall.ID == "" || event.ToolCall.Name == "" {
-					return Message{}, nil, "error", Usage{}, errors.New("provider emitted invalid tool call")
-				}
-				assistant.Content = append(assistant.Content, event.ToolCall)
-				calls = append(calls, event.ToolCall)
-				emit(Event{Type: EventMessageUpdate, Message: &assistant})
-			case ProviderDone:
-				stopReason, usage = event.StopReason, event.Usage
-			case ProviderError:
-				if event.Err != nil {
-					return Message{}, nil, "error", Usage{}, event.Err
-				}
-				return Message{}, nil, "error", Usage{}, errors.New("provider stream failed")
+			if err := handle(event); err != nil {
+				return Message{}, nil, "error", Usage{}, err
 			}
 		case err, ok := <-providerErr:
 			if !ok {
@@ -664,6 +728,15 @@ func (a *Agent) setContextTokens(tokens int) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.state.ContextTokens = tokens
+}
+
+func (a *Agent) setContextWindow(tokens int) {
+	if tokens <= 0 {
+		return
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.state.ContextWindow = tokens
 }
 
 func (a *Agent) setUpstreamTransport(transport string) {
