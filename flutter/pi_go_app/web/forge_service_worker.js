@@ -1,10 +1,13 @@
-const CACHE_NAME = 'forge-web-v7';
+const CACHE_NAME = 'forge-web-v9';
 const APP_SHELL = [
   './',
   './index.html',
-  './flutter_bootstrap.js?v=7',
+  './flutter_bootstrap.js?v=9',
   './flutter.js',
-  './main.dart.js?v=7',
+  // The WebAssembly build runs where supported; main.dart.js is the fallback.
+  './main.dart.wasm?v=9',
+  './main.dart.mjs?v=9',
+  './main.dart.js?v=9',
   './manifest.json',
   './version.json',
   './favicon.png',
@@ -20,6 +23,8 @@ const APP_SHELL = [
   './assets/packages/cupertino_icons/assets/CupertinoIcons.ttf',
   './assets/shaders/ink_sparkle.frag',
   './assets/shaders/stretch_effect.frag',
+  './canvaskit/skwasm.js',
+  './canvaskit/skwasm.wasm',
   './canvaskit/canvaskit.js',
   './canvaskit/canvaskit.wasm',
   './canvaskit/chromium/canvaskit.js',

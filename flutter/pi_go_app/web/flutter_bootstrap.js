@@ -6,7 +6,9 @@
 // when Chrome DevTools has "Disable cache" enabled (that toggle does not bypass
 // service-worker CacheStorage).
 for (const build of _flutter.buildConfig.builds) {
-  if (build.mainJsPath) build.mainJsPath += "?v=7";
+  if (build.mainJsPath) build.mainJsPath += "?v=9";
+  if (build.mainWasmPath) build.mainWasmPath += "?v=9";
+  if (build.jsSupportRuntimePath) build.jsSupportRuntimePath += "?v=9";
 }
 
 _flutter.loader.load({

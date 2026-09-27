@@ -34,4 +34,19 @@ curl -I https://forge-app.tingouw.com/ios/manifest.plist
 curl -I https://forge-app.tingouw.com/ios/Forge.ipa
 ```
 
+## Web client
+
+`deploy-web.sh` builds the Flutter web app and uploads it to the root of the separate R2 bucket `forge-web`, served at `https://forge.tingouw.com`:
+
+```bash
+./s3/deploy-web.sh
+BUILD_NAME=1.0.1 BUILD_NUMBER=18 ./s3/deploy-web.sh
+```
+
+Set `WEB_PREFIX=web` to publish under a subpath instead (base href `/web/`).
+
+The build uses `--wasm`: browsers with WasmGC load `main.dart.wasm` with the skwasm renderer, and others fall back to `main.dart.js` with CanvasKit. `main.dart.mjs` must be served as JavaScript or the WebAssembly build fails to start, and there's no fallback in that case. Without `Cross-Origin-Opener-Policy: same-origin` and `Cross-Origin-Embedder-Policy: require-corp` headers, skwasm runs single-threaded. If those headers are added (for example with a Cloudflare response header rule), the CSP's `worker-src 'self' blob:` lets its worker start.
+
+Bump the `?v=` cache version in `web/index.html`, `web/flutter_bootstrap.js`, and `web/forge_service_worker.js` for each release so installed PWAs pick up the new build.
+
 The IPA uses production APNs. Anyone may download a public IPA, but iOS installs it only on UDIDs embedded in the Ad Hoc provisioning profile.
