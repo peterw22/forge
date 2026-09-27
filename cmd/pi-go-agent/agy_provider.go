@@ -188,7 +188,7 @@ func (w *limitedWriter) Write(b []byte) (int, error) {
 
 func parseAgyStream(ctx context.Context, input io.Reader, events chan<- agent.ProviderEvent, save func(string)) error {
 	scanner := bufio.NewScanner(input)
-	scanner.Buffer(make([]byte, 64*1024), 1<<20)
+	scanner.Buffer(make([]byte, 64*1024), maxStreamLine)
 	var answer strings.Builder
 	var conversation string
 	done := false

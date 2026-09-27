@@ -102,7 +102,7 @@ func (p *claudeCLIProvider) compactConversation(ctx context.Context, req agent.R
 // result. Every event must belong to the resumed session.
 func parseClaudeCompactStream(ctx context.Context, reader io.Reader, conversation string) (agent.ProviderCompaction, error) {
 	scanner := bufio.NewScanner(reader)
-	scanner.Buffer(make([]byte, 64*1024), 4<<20)
+	scanner.Buffer(make([]byte, 64*1024), maxStreamLine)
 	var result agent.ProviderCompaction
 	boundary, summarySeen, done := false, false, false
 	for scanner.Scan() {

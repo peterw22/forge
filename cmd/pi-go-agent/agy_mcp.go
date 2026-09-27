@@ -29,7 +29,7 @@ func serveAgyMCP(ctx context.Context, input io.Reader, output io.Writer, tools [
 		return errors.New("MCP tool dispatcher is required")
 	}
 	scanner := bufio.NewScanner(input)
-	scanner.Buffer(make([]byte, 64*1024), 1<<20)
+	scanner.Buffer(make([]byte, 64*1024), maxStreamLine)
 	encoder := json.NewEncoder(output)
 	for scanner.Scan() {
 		if err := ctx.Err(); err != nil {

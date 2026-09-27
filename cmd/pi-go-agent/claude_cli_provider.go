@@ -121,8 +121,21 @@ func (p *claudeCLIProvider) stream(ctx context.Context, req agent.Request, event
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("start Claude: %w", err)
 	}
+	// Persist the conversation as soon as Claude reports it. Tool calls and
+	// commentary are saved while the turn runs, so a turn that is aborted or
+	// fails afterwards must still leave a resumable binding.
 	var completedID string
-	parseErr := parseClaudeCLIStream(ctx, stdout, events, func(id string) { completedID = id }, verified.Store)
+	var saveErr error
+	save := func(id string) {
+		if id == completedID {
+			return
+		}
+		completedID = id
+		if req.SaveProviderConversation != nil && saveErr == nil {
+			saveErr = req.SaveProviderConversation("claude", req.Model, req.WorkingDirectory, id)
+		}
+	}
+	parseErr := parseClaudeCLIStream(ctx, stdout, events, save, verified.Store)
 	if parseErr != nil {
 		_ = cmd.Process.Kill()
 	}
@@ -139,11 +152,9 @@ func (p *claudeCLIProvider) stream(ctx context.Context, req agent.Request, event
 		p.CloseSession(req.SessionID)
 		return fmt.Errorf("Claude exited: %w: %s", waitErr, stderr.String())
 	}
-	if req.SaveProviderConversation != nil {
-		if err := req.SaveProviderConversation("claude", req.Model, req.WorkingDirectory, completedID); err != nil {
-			p.CloseSession(req.SessionID)
-			return err
-		}
+	if saveErr != nil {
+		p.CloseSession(req.SessionID)
+		return saveErr
 	}
 	p.mu.Lock()
 	p.conversations[req.SessionID] = agyConversation{ID: completedID, Model: req.Model}
@@ -157,6 +168,12 @@ func claudeEffortAllowed(level string) bool {
 	}
 	return false
 }
+
+// maxStreamLine bounds one JSON line from a CLI provider or its MCP child.
+// Claude echoes each tool result, including base64 images, as a single
+// stream-json line, and write arguments can be large. bufio.Scanner grows its
+// buffer only as needed, so ordinary lines stay small.
+const maxStreamLine = 256 << 20
 
 // claudeUsage is Anthropic usage, whose input_tokens exclude cache reads and
 // writes. A result's usage sums every API call of the turn.
@@ -176,7 +193,7 @@ func (u claudeUsage) agentUsage() agent.Usage {
 
 func parseClaudeCLIStream(ctx context.Context, reader io.Reader, events chan<- agent.ProviderEvent, save func(string), onVerified ...func(bool)) error {
 	scanner := bufio.NewScanner(reader)
-	scanner.Buffer(make([]byte, 64*1024), 1<<20)
+	scanner.Buffer(make([]byte, 64*1024), maxStreamLine)
 	var session string
 	var text strings.Builder
 	var finalSegment strings.Builder
@@ -261,6 +278,7 @@ func parseClaudeCLIStream(ctx context.Context, reader io.Reader, events chan<- a
 				}
 				initialized = true
 				session = msg.SessionID
+				save(session)
 				if len(onVerified) > 0 && onVerified[0] != nil {
 					onVerified[0](true)
 				}

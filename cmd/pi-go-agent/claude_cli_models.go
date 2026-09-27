@@ -116,7 +116,7 @@ func discoverClaudeModels(ctx context.Context, binary string) ([]claudeModel, er
 
 func parseClaudeModels(output []byte) ([]claudeModel, error) {
 	scanner := bufio.NewScanner(strings.NewReader(string(output)))
-	scanner.Buffer(make([]byte, 64*1024), 4<<20)
+	scanner.Buffer(make([]byte, 64*1024), maxStreamLine)
 	for scanner.Scan() {
 		var msg struct {
 			Type     string `json:"type"`

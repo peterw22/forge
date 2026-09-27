@@ -72,7 +72,7 @@ func (p *claudeCLIProvider) CompleteStructured(ctx context.Context, req agent.Re
 // result's structured_output object.
 func parseClaudeStructuredStream(ctx context.Context, reader io.Reader) (map[string]any, error) {
 	scanner := bufio.NewScanner(reader)
-	scanner.Buffer(make([]byte, 64*1024), 1<<20)
+	scanner.Buffer(make([]byte, 64*1024), maxStreamLine)
 	var session string
 	var result map[string]any
 	initialized, done := false, false
