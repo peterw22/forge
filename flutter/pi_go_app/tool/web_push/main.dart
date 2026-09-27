@@ -1,10 +1,12 @@
-// Runs Forge in a browser against a demo agent and a demo relay, and walks
-// through notifications: turning them on, the pairing, a turn that ends, and
-// the notification that the service worker shows for it.
+// Runs Forge in a browser against a demo agent and a demo relay. It attaches
+// a picked image, and walks through notifications: turning them on, the
+// pairing, a turn that ends, and the notification that the service worker
+// shows for it.
 //
 // scripts/test-web-push.cjs starts everything and is told here what to do:
-// whitelist this device, answer the browser's question for permission, tap
-// the notification. It receives each message at the address in DEMO_REPORT.
+// whitelist this device, choose a file, answer the browser's question for
+// permission, tap the notification. It receives each message at the address
+// in DEMO_REPORT.
 import 'dart:async';
 import 'dart:convert';
 import 'dart:js_interop';
@@ -132,6 +134,25 @@ Future<void> walkThrough() async {
   await say('platform $pushPlatform');
   if (!await connect()) return;
   await say('connected');
+
+  // A browser opens its chooser only for a click of its own, which the host
+  // makes where the button is, and answers with a file.
+  final attach = find.byTooltip('Attach images');
+  final chips = find.byType(InputChip);
+  final button = app.getCenter(attach);
+  await say('attach ${button.dx.round()} ${button.dy.round()}');
+  if (!await until(
+    () => present(chips),
+    what: 'the image that was picked',
+    seconds: 30,
+  )) {
+    return;
+  }
+  final chip = chips.evaluate().single.widget as InputChip;
+  await say('attached ${(chip.label as Text).data}');
+  chip.onDeleted!();
+  await wait(900);
+  if (present(chips)) return say('failed the image was not removed');
 
   // Notifications are off until they are asked for.
   if ((await shown()).isNotEmpty) return say('failed a notification is shown');

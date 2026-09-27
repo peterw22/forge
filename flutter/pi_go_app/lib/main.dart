@@ -4777,6 +4777,18 @@ class _AgentPageState extends State<AgentPage> with WidgetsBindingObserver {
   }
 
   Future<void> _pickImages() async {
+    try {
+      await _attachPickedImages();
+    } catch (error) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Could not attach the images: $error')),
+        );
+      }
+    }
+  }
+
+  Future<void> _attachPickedImages() async {
     final files = await ImagePicker().pickMultiImage();
     if (files.isEmpty) return;
     final additions = <PendingImage>[];

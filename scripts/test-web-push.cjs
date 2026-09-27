@@ -8,7 +8,9 @@
 // client in it: flutter/pi_go_app/tool/web_push/main.dart turns notifications
 // on, pairs with the agent and has it finish a turn. The notification then
 // travels as it does for a user: agent, relay, the push service of Chrome,
-// the service worker. Nothing of your own agent, relay or browser is touched.
+// the service worker. Before that it attaches an image that is picked, under
+// the policy of the page. Nothing of your own agent, relay or browser is
+// touched.
 //
 // The message passes through Google's push service, encrypted twice. The
 // demo agent uses Claude Code for one short turn, so `claude` must be
@@ -232,6 +234,9 @@ class Browser {
         this.pending.delete(data.id);
         if (data.error) reject(new Error(`${data.error.message}`));
         else resolve(data.result);
+      } else if (data.method === 'Page.fileChooserOpened') {
+        this.send('DOM.setFileInputFiles', { files: [this.file], backendNodeId: data.params.backendNodeId }, this.page)
+          .catch((error) => this.console.write(`file chooser: ${error.message}\n`));
       } else if (data.method === 'ServiceWorker.workerRegistrationUpdated') {
         // Chrome has service workers of its own, for its extensions.
         const own = data.params.registrations.find((registration) => registration.scopeURL.startsWith(ORIGIN));
@@ -267,6 +272,21 @@ class Browser {
     const result = await this.send('Runtime.evaluate', { expression, awaitPromise: true, returnByValue: true }, sessionId);
     if (result.exceptionDetails) throw new Error(JSON.stringify(result.exceptionDetails).slice(0, 500));
     return result.result.value;
+  }
+
+  // Clicks where Forge has its button, and answers the chooser that opens
+  // with a picture of one pixel.
+  async pickImage(x, y) {
+    this.file = path.join(HOME, 'picked.png');
+    fs.writeFileSync(this.file, Buffer.from(
+      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGNgYGD4DwABBAEAwS2OUAAAAABJRU5ErkJggg==', 'base64'));
+    await this.send('Page.enable', {}, this.page);
+    await this.send('Page.setInterceptFileChooserDialog', { enabled: true }, this.page);
+    const mouse = (type) => this.send('Input.dispatchMouseEvent',
+      { type, x, y, button: type === 'mouseMoved' ? 'none' : 'left', clickCount: 1 }, this.page);
+    await mouse('mouseMoved');
+    await mouse('mousePressed');
+    await mouse('mouseReleased');
   }
 
   allowNotifications() {
@@ -363,6 +383,11 @@ async function main() {
     log('  ', kind, kind === 'identity' ? '' : detail.slice(0, 300));
     if (kind === 'identity') {
       startAgent(agent, JSON.parse(detail));
+    } else if (kind === 'attach') {
+      const [x, y] = detail.split(' ').map(Number);
+      await browser.pickImage(x, y);
+    } else if (kind === 'attached') {
+      check('a picked image is attached', detail === 'picked.png', detail);
     } else if (kind === 'permission') {
       await browser.allowNotifications();
     } else if (kind === 'notification') {
@@ -390,7 +415,7 @@ async function main() {
   await browser.openPage(ORIGIN);
   const result = await Promise.race([finished, sleep(15 * 60 * 1000).then(() => 'failed the run took too long')]);
 
-  for (const step of ['identity', 'platform', 'connected', 'permission', 'pairing', 'subscribed', 'prompted', 'notification', 'tap', 'tapped']) {
+  for (const step of ['identity', 'platform', 'connected', 'attach', 'attached', 'permission', 'pairing', 'subscribed', 'prompted', 'notification', 'tap', 'tapped']) {
     check(`step: ${step}`, heard.includes(step));
   }
   const devices = rows(state, "SELECT platform FROM devices");

@@ -1,16 +1,16 @@
-importScripts('./forge_push.js?v=16');
+importScripts('./forge_push.js?v=17');
 
-const CACHE_NAME = 'forge-web-v16';
+const CACHE_NAME = 'forge-web-v17';
 const APP_SHELL = [
   './',
   './index.html',
-  './flutter_bootstrap.js?v=16',
+  './flutter_bootstrap.js?v=17',
   './flutter.js',
-  './forge_push.js?v=16',
+  './forge_push.js?v=17',
   // The WebAssembly build runs where supported; main.dart.js is the fallback.
-  './main.dart.wasm?v=16',
-  './main.dart.mjs?v=16',
-  './main.dart.js?v=16',
+  './main.dart.wasm?v=17',
+  './main.dart.mjs?v=17',
+  './main.dart.js?v=17',
   './manifest.json',
   './version.json',
   './favicon.png',
