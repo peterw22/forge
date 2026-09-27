@@ -5272,7 +5272,7 @@ class _AgentPageState extends State<AgentPage> with WidgetsBindingObserver {
             Row(
               children: [
                 Text(
-                  'Pi Go',
+                  'Forge',
                   style: theme.textTheme.titleLarge?.copyWith(
                     fontWeight: FontWeight.w700,
                     letterSpacing: -.3,

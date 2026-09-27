@@ -14,7 +14,7 @@ void main() {
     debugDefaultTargetPlatformOverride = TargetPlatform.macOS;
     addTearDown(() => tester.binding.setSurfaceSize(null));
     await tester.pumpWidget(const PiGoApp());
-    expect(find.text('Pi Go'), findsOneWidget);
+    expect(find.text('Forge'), findsOneWidget);
     final app = tester.widget<MaterialApp>(find.byType(MaterialApp));
     expect(app.themeMode, ThemeMode.system);
     expect(app.theme?.brightness, Brightness.light);
@@ -233,7 +233,7 @@ void main() {
     await tester.drag(find.byType(ListView).first, const Offset(0, 500));
     await tester.pumpAndSettle();
     expect(find.byKey(const ValueKey('collapsed-header-status')), findsNothing);
-    expect(find.text('Pi Go'), findsOneWidget);
+    expect(find.text('Forge'), findsOneWidget);
     await tester.pump(const Duration(seconds: 6));
     debugDefaultTargetPlatformOverride = null;
   });
@@ -1093,7 +1093,7 @@ done""",
     await tester.drag(find.byType(ListView).first, const Offset(0, 600));
     await tester.pumpAndSettle();
     expect(find.byKey(const ValueKey('collapsed-header-status')), findsNothing);
-    expect(find.text('Pi Go'), findsOneWidget);
+    expect(find.text('Forge'), findsOneWidget);
 
     // An upward finger gesture collapses it.
     await tester.drag(find.byType(ListView).first, const Offset(0, -300));
@@ -1102,10 +1102,10 @@ done""",
       find.byKey(const ValueKey('collapsed-header-status')),
       findsOneWidget,
     );
-    expect(find.text('Pi Go'), findsNothing);
+    expect(find.text('Forge'), findsNothing);
     await tester.tap(find.byKey(const ValueKey('collapsed-header-status')));
     await tester.pumpAndSettle();
-    expect(find.text('Pi Go'), findsOneWidget);
+    expect(find.text('Forge'), findsOneWidget);
     await tester.drag(find.byType(ListView).first, const Offset(0, 600));
     await tester.pumpAndSettle();
     final userOffset = controller.offset;
