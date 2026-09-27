@@ -1,16 +1,16 @@
-importScripts('./forge_push.js?v=15');
+importScripts('./forge_push.js?v=16');
 
-const CACHE_NAME = 'forge-web-v15';
+const CACHE_NAME = 'forge-web-v16';
 const APP_SHELL = [
   './',
   './index.html',
-  './flutter_bootstrap.js?v=15',
+  './flutter_bootstrap.js?v=16',
   './flutter.js',
-  './forge_push.js?v=15',
+  './forge_push.js?v=16',
   // The WebAssembly build runs where supported; main.dart.js is the fallback.
-  './main.dart.wasm?v=15',
-  './main.dart.mjs?v=15',
-  './main.dart.js?v=15',
+  './main.dart.wasm?v=16',
+  './main.dart.mjs?v=16',
+  './main.dart.js?v=16',
   './manifest.json',
   './version.json',
   './favicon.png',
@@ -113,8 +113,8 @@ self.addEventListener('push', (event) => {
 
 // A browser requires a notification for every push, and withdraws the
 // subscription of a site that shows none. A message that cannot be read is
-// therefore shown without content, and none is held back for the session on
-// screen.
+// therefore shown without content, with the reason, and none is held back for
+// the session on screen.
 async function showPush(data) {
   let title = 'Forge';
   let body = 'Encrypted notification';
@@ -126,8 +126,9 @@ async function showPush(data) {
     body = push.body;
     tag = push.eventId;
     tap = { agentId: push.agentId, sessionId: push.sessionId };
-  } catch (_) {
+  } catch (error) {
     // Never log ciphertext, key identifiers, routing metadata, or plaintext.
+    if (error && error.reason) body = `${body}: ${error.reason}`;
   }
   await self.registration.showNotification(title, {
     body,

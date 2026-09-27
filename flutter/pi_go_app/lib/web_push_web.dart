@@ -77,27 +77,25 @@ Future<Map<String, Object?>?> webPushSubscription(
   };
 }
 
-/// Keeps the key of an agent where the service worker finds it. The browser
-/// holds it as a key that decrypts and cannot be exported.
+/// Keeps the key of an agent where the service worker finds it, as bytes.
+///
+/// A key object that cannot be exported would be better kept, but a browser
+/// wraps such an object when it is stored, and Safari cannot unwrap it while
+/// the iPhone is locked, which is when most notifications arrive.
 Future<void> storeWebPushContentKey({
   required String agentId,
   required String deviceId,
   required String keyId,
   required String key,
 }) async {
-  final imported = await web.window.crypto.subtle
-      .importKey(
-        'raw',
-        _decodeBase64Url(key).toJS,
-        {'name': 'AES-GCM'}.jsify()!,
-        false,
-        ['decrypt'].map((value) => value.toJS).toList().toJS,
-      )
-      .toDart;
+  final bytes = _decodeBase64Url(key);
+  if (bytes.length != 32) {
+    throw ArgumentError('A push content key has 256 bits');
+  }
   final record = JSObject()
     ..setProperty('agentId'.toJS, agentId.toJS)
     ..setProperty('deviceId'.toJS, deviceId.toJS)
-    ..setProperty('key'.toJS, imported);
+    ..setProperty('raw'.toJS, bytes.toJS);
   final database = await _openDatabase();
   try {
     await _request(

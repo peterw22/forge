@@ -92,8 +92,19 @@ void main() {
       record.getProperty<JSString>('deviceId'.toJS).toDart,
       'device-identifier-123',
     );
-    final key = record.getProperty<web.CryptoKey>('key'.toJS);
-    expect(key.extractable, isFalse);
+    // The bytes, and no key object, which Safari cannot read while locked.
+    expect(record.has('key'), isFalse);
+    final raw = record.getProperty<JSUint8Array>('raw'.toJS);
+    expect(raw.toDart, [for (var index = 1; index <= 32; index++) index]);
+    final key = await web.window.crypto.subtle
+        .importKey(
+          'raw',
+          raw,
+          {'name': 'AES-GCM'}.jsify()!,
+          false,
+          ['decrypt'].map((value) => value.toJS).toList().toJS,
+        )
+        .toDart;
 
     // The envelope of cmd/pi-go-agent/push_content_crypto_test.go.
     final associated = [

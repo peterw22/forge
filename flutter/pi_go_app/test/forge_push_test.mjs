@@ -8,7 +8,7 @@ import vm from 'node:vm';
 vm.runInThisContext(
   fs.readFileSync(new URL('../web/forge_push.js', import.meta.url), 'utf8'),
 );
-const { decryptWith } = globalThis.forgePush;
+const { decrypt, decryptWith } = globalThis.forgePush;
 
 // Encrypted by the agent; cmd/pi-go-agent/push_content_crypto_test.go holds
 // the same envelope.
@@ -23,16 +23,25 @@ const message = {
     'mFfo5FPydjd32QssKhAgoTGvR-NIw4OEJ6NolVLKSj8Xio4ghB5J',
 };
 
+const bytes = Uint8Array.from({ length: 32 }, (_, index) => index + 1);
+
+// A record as Forge stores it: the key as bytes.
 async function record(overrides = {}) {
-  const key = await crypto.subtle.importKey(
-    'raw',
-    Uint8Array.from({ length: 32 }, (_, index) => index + 1),
-    'AES-GCM',
-    false,
-    ['decrypt'],
-  );
-  return { agentId: 'agent-identifier-12345', deviceId: 'device-identifier-123', key, ...overrides };
+  return { agentId: 'agent-identifier-12345', deviceId: 'device-identifier-123', raw: bytes, ...overrides };
 }
+
+test('reads with a record of an earlier version, which holds a key object', async () => {
+  const key = await crypto.subtle.importKey('raw', bytes, 'AES-GCM', false, ['decrypt']);
+  const earlier = { agentId: 'agent-identifier-12345', deviceId: 'device-identifier-123', key };
+  assert.equal((await decryptWith(message, earlier)).title, 'Forge approval required');
+});
+
+test('says why a notification has no content, and nothing else', async () => {
+  // Without a database the key cannot be read, as on a device that is locked.
+  await assert.rejects(decrypt(message), (error) => error.reason === 'its key could not be read');
+  await assert.rejects(decrypt({ ...message, keyId: 'short' }), (error) => error.reason === 'it could not be decrypted');
+  await assert.rejects(decrypt(null), (error) => error.reason === 'it could not be decrypted');
+});
 
 test('reads a notification that the agent encrypted', async () => {
   assert.deepEqual(await decryptWith(message, await record()), {
@@ -86,8 +95,8 @@ test('refuses content that is not a notification of Forge', async () => {
     return { ...message, nonce: encode(nonce), ciphertext: encode(sealed) };
   };
   const content = { type: 'session_completed', sessionId: 's', title: 'Forge session completed', body: 'Done.' };
-  assert.equal((await decryptWith(await seal(content), await record({ key }))).body, 'Done.');
-  await assert.rejects(decryptWith(await seal({ ...content, type: 'other' }), await record({ key })));
-  await assert.rejects(decryptWith(await seal({ ...content, title: '' }), await record({ key })));
-  await assert.rejects(decryptWith(await seal({ ...content, body: 'x'.repeat(301) }), await record({ key })));
+  assert.equal((await decryptWith(await seal(content), await record())).body, 'Done.');
+  await assert.rejects(decryptWith(await seal({ ...content, type: 'other' }), await record()));
+  await assert.rejects(decryptWith(await seal({ ...content, title: '' }), await record()));
+  await assert.rejects(decryptWith(await seal({ ...content, body: 'x'.repeat(301) }), await record()));
 });

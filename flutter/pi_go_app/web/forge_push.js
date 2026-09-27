@@ -16,6 +16,15 @@
     return Uint8Array.from(atob(padded), (character) => character.charCodeAt(0));
   }
 
+  // Why a notification is shown without its content. It names no key, no
+  // session and nothing of the message.
+  class Unread extends Error {
+    constructor(reason) {
+      super(reason);
+      this.reason = reason;
+    }
+  }
+
   function requireIdentifier(value) {
     if (typeof value !== 'string' || !IDENTIFIER.test(value)) throw new Error('invalid identifier');
     return value;
@@ -26,6 +35,14 @@
       throw new Error('invalid text');
     }
     return value;
+  }
+
+  // The key is kept as bytes. A key object is wrapped by the browser when it
+  // is stored, and Safari on a locked iPhone cannot unwrap it, which is when
+  // most notifications arrive. A record of an earlier version holds the object.
+  function keyOf(record) {
+    if (record.raw === undefined) return record.key;
+    return crypto.subtle.importKey('raw', record.raw, { name: 'AES-GCM' }, false, ['decrypt']);
   }
 
   // Decrypts one message with the key it names. `record` holds the key and the
@@ -45,7 +62,7 @@
     const associated = ['FORGE-PUSH-CONTENT-V1', agentId, deviceId, eventId, keyId].join('\n');
     const plaintext = new Uint8Array(await crypto.subtle.decrypt(
       { name: 'AES-GCM', iv: nonce, additionalData: new TextEncoder().encode(associated) },
-      record.key,
+      await keyOf(record),
       ciphertext,
     ));
     if (plaintext.length > 4096) throw new Error('invalid size');
@@ -88,10 +105,24 @@
   }
 
   async function decrypt(message) {
-    const keyId = requireIdentifier(message === null || typeof message !== 'object' ? '' : message.keyId);
-    const record = await transact(KEYS, 'readonly', (store) => store.get(keyId));
-    if (record === undefined || record === null) throw new Error('unknown key');
-    return decryptWith(message, record);
+    let keyId;
+    try {
+      keyId = requireIdentifier(message === null || typeof message !== 'object' ? '' : message.keyId);
+    } catch (_) {
+      throw new Unread('it could not be decrypted');
+    }
+    let record;
+    try {
+      record = await transact(KEYS, 'readonly', (store) => store.get(keyId));
+    } catch (_) {
+      throw new Unread('its key could not be read');
+    }
+    if (record === undefined || record === null) throw new Unread('this browser has no key for it');
+    try {
+      return await decryptWith(message, record);
+    } catch (_) {
+      throw new Unread('it could not be decrypted');
+    }
   }
 
   const writeState = (name, value) => transact(STATE, 'readwrite', (store) => store.put(value, name));

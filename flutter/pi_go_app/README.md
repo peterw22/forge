@@ -187,10 +187,10 @@ A browser notifies only after **Turn on notifications** in the settings menu, be
 
 Two rules of the apps do not hold here, because a browser withdraws the subscription of a site that receives a push and shows nothing:
 
-- A message that cannot be decrypted is shown as "Encrypted notification".
+- A message that cannot be decrypted is shown as "Encrypted notification", with the reason.
 - A notification is shown for the session you are looking at too.
 
-The key that decrypts is kept by the browser and cannot be exported, but no hardware protects it, as with the identity key of the web client.
+The key that decrypts is kept by the browser as bytes, which the service worker reads while an iPhone is locked too. No hardware protects it. See [the push relay](../../docs/security/push-relay.md#in-a-browser).
 
 ```bash
 node --test test/forge_push_test.mjs

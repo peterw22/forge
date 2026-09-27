@@ -376,7 +376,8 @@ async function main() {
     } else if (kind === 'done') {
       const shown = await browser.pushUnreadable();
       check('a push that cannot be read is shown without content',
-        shown.some((notification) => notification.title === 'Forge' && notification.body === 'Encrypted notification'),
+        shown.some((notification) => notification.title === 'Forge' &&
+          notification.body === 'Encrypted notification: this browser has no key for it'),
         JSON.stringify(shown));
       finish(message);
     } else if (kind === 'failed') {

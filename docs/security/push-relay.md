@@ -75,10 +75,10 @@ The relay sends a request to the address a subscription names. It stores a subsc
 
 A browser withdraws the subscription of a site that receives a push and shows nothing. Two rules of the apps therefore do not hold in a browser:
 
-- A message with an unknown key, or one that fails to decrypt, is shown as "Encrypted notification".
+- A message with an unknown key, or one that fails to decrypt, is shown as "Encrypted notification", with the reason: the browser has no key for it, its key could not be read, or it could not be decrypted.
 - A notification is shown for the session on screen too.
 
-The content key is kept in the browser's database as a key that decrypts and cannot be exported. No hardware protects it.
+The content key is kept in the browser's database as bytes, and no hardware protects it. A script of the site could read it, where it could only use a key object that cannot be exported. Such an object cannot be kept: a browser wraps it when it is stored, Safari with a key of the keychain that iOS releases only while the iPhone is unlocked, so that no notification could be read on a locked iPhone. The key protects one sentence for each notification, and the policy of the page allows no script of another origin.
 
 ## Authenticating to the relay
 
