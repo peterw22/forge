@@ -197,7 +197,7 @@ The agent is called `pi-go-agent` because the project began as a Go port of part
 
 ## License
 
-Copyright © 2026 Tingou W.
+Copyright © 2026 Tingou Wu.
 
 Forge is free software: you can redistribute it and/or modify it under the terms of the GNU General Public License, version 3, as published by the Free Software Foundation.
 
