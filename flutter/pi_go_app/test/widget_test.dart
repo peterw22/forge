@@ -565,6 +565,9 @@ done""",
       MaterialApp(home: AgentPage(connection: connection)),
     );
     await tester.pumpAndSettle();
+    expect(find.byKey(const ValueKey('cron-preview')), findsNothing);
+    await tester.tap(find.byKey(const ValueKey('tool-panel-cron-1')));
+    await tester.pump();
     expect(find.byKey(const ValueKey('cron-preview')), findsOneWidget);
     expect(find.text('Cron job #7'), findsOneWidget);
     expect(find.text('0 9 * * 1-5'), findsOneWidget);
@@ -608,7 +611,7 @@ done""",
     expect(tester.takeException(), isNull);
   });
 
-  testWidgets('latest tool auto-expands while manual panel choices persist', (
+  testWidgets('tool panels start folded and keep manual choices', (
     tester,
   ) async {
     await tester.binding.setSurfaceSize(const Size(1024, 768));
@@ -633,35 +636,203 @@ done""",
 
     startTool('tool-1', 'printf first');
     await tester.pump();
-    expect(connection.messages.single.collapsed, isFalse);
+    expect(connection.messages.single.collapsed, isTrue);
+    expect(find.textContaining('printf first'), findsNothing);
 
     startTool('tool-2', 'printf second');
     await tester.pump();
     expect(connection.messages[0].collapsed, isTrue);
-    expect(connection.messages[1].collapsed, isFalse);
+    expect(connection.messages[1].collapsed, isTrue);
 
-    // Tapping anywhere on the first panel manually expands it and exempts it
-    // from future automatic collapse/expand changes.
+    // Tapping anywhere on a panel opens it, and later tools leave it open.
     await tester.tap(find.byKey(const ValueKey('tool-panel-tool-1')));
     await tester.pump();
     expect(connection.messages[0].collapsed, isFalse);
-    expect(connection.messages[0].collapseManuallySet, isTrue);
-
-    // Tapping the currently expanded latest panel manually collapses it. It too
-    // is now exempt, so the next tool does not reopen or otherwise change it.
-    final secondPanel = find.byKey(const ValueKey('tool-panel-tool-2'));
-    await tester.ensureVisible(secondPanel);
-    await tester.pumpAndSettle();
-    await tester.tap(secondPanel);
-    await tester.pump();
-    expect(connection.messages[1].collapsed, isTrue);
-    expect(connection.messages[1].collapseManuallySet, isTrue);
+    expect(find.textContaining('printf first'), findsOneWidget);
 
     startTool('tool-3', 'printf third');
     await tester.pump();
     expect(connection.messages[0].collapsed, isFalse);
     expect(connection.messages[1].collapsed, isTrue);
-    expect(connection.messages[2].collapsed, isFalse);
+    expect(connection.messages[2].collapsed, isTrue);
+
+    // A finished tool does not open by itself either.
+    connection.receive(
+      jsonEncode({
+        'event': {
+          'type': 'tool_execution_end',
+          'toolCallId': 'tool-3',
+          'toolName': 'bash',
+          'result': {
+            'content': [
+              {'type': 'text', 'text': 'third'},
+            ],
+          },
+        },
+      }),
+    );
+    await tester.pump();
+    expect(connection.messages[2].collapsed, isTrue);
+
+    await tester.tap(find.byKey(const ValueKey('tool-panel-tool-1')));
+    await tester.pump();
+    expect(connection.messages[0].collapsed, isTrue);
+    expect(find.textContaining('printf first'), findsNothing);
+    expect(tester.takeException(), isNull);
+  });
+
+  Map<String, dynamic> toolStart(String id) => {
+    'event': {
+      'type': 'tool_execution_start',
+      'toolCallId': id,
+      'toolName': 'bash',
+      'arguments': {'command': 'sleep 30', 'description': 'Wait'},
+    },
+  };
+
+  Finder running(String id) => find.byKey(ValueKey('tool-running-$id'));
+
+  Future<AgentConnection> startTurnWithTool(WidgetTester tester) async {
+    await tester.binding.setSurfaceSize(const Size(1024, 768));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    final connection = AgentConnection();
+    await tester.pumpWidget(
+      MaterialApp(home: AgentPage(connection: connection)),
+    );
+    connection.receive(
+      jsonEncode({
+        'event': {'type': 'agent_start'},
+      }),
+    );
+    connection.receive(jsonEncode(toolStart('tool-1')));
+    // The indicator never settles, so advance by a frame instead.
+    await tester.pump();
+    expect(connection.messages.single.running, isTrue);
+    expect(running('tool-1'), findsOneWidget);
+    return connection;
+  }
+
+  testWidgets('a running tool animates until its result arrives', (
+    tester,
+  ) async {
+    final connection = await startTurnWithTool(tester);
+    expect(
+      find.descendant(
+        of: running('tool-1'),
+        matching: find.byType(CircularProgressIndicator),
+      ),
+      findsOneWidget,
+    );
+    await tester.pump(const Duration(milliseconds: 400));
+    expect(tester.hasRunningAnimations, isTrue);
+
+    // A second tool animates on its own; the first keeps running.
+    connection.receive(jsonEncode(toolStart('tool-2')));
+    await tester.pump();
+    expect(running('tool-1'), findsOneWidget);
+    expect(running('tool-2'), findsOneWidget);
+
+    connection.receive(
+      jsonEncode({
+        'event': {
+          'type': 'tool_execution_end',
+          'toolCallId': 'tool-1',
+          'toolName': 'bash',
+          'result': {
+            'content': [
+              {'type': 'text', 'text': 'done'},
+            ],
+          },
+        },
+      }),
+    );
+    await tester.pump();
+    expect(running('tool-1'), findsNothing);
+    expect(running('tool-2'), findsOneWidget);
+    expect(connection.messages.first.collapsed, isTrue);
+
+    // A failed tool reports no content but has still finished.
+    connection.receive(
+      jsonEncode({
+        'event': {
+          'type': 'tool_execution_end',
+          'toolCallId': 'tool-2',
+          'toolName': 'bash',
+          'isError': true,
+        },
+      }),
+    );
+    await tester.pumpAndSettle();
+    expect(running('tool-2'), findsNothing);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('cancelling the turn stops the animation of its tools', (
+    tester,
+  ) async {
+    final connection = await startTurnWithTool(tester);
+    connection.receive(jsonEncode(toolStart('tool-2')));
+    await tester.pump();
+    expect(running('tool-2'), findsOneWidget);
+
+    // An aborted turn ends without a result for the tools it was running.
+    connection.receive(
+      jsonEncode({
+        'event': {'type': 'agent_end', 'error': 'aborted'},
+      }),
+    );
+    await tester.pumpAndSettle();
+    expect(running('tool-1'), findsNothing);
+    expect(running('tool-2'), findsNothing);
+    expect(connection.messages.every((item) => !item.running), isTrue);
+    expect(connection.streaming, isFalse);
+
+    // The next turn does not revive the indicators of the cancelled one.
+    connection.receive(
+      jsonEncode({
+        'event': {'type': 'agent_start'},
+      }),
+    );
+    await tester.pumpAndSettle();
+    expect(running('tool-1'), findsNothing);
+    expect(running('tool-2'), findsNothing);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('losing the connection stops the animation of running tools', (
+    tester,
+  ) async {
+    final connection = await startTurnWithTool(tester);
+    final disconnected = connection.disconnect();
+    await tester.pump();
+    await disconnected;
+    await tester.pumpAndSettle();
+    expect(running('tool-1'), findsNothing);
+    expect(connection.messages.single.running, isFalse);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('a running tool shows a still icon when motion is reduced', (
+    tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(1024, 768));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    tester.platformDispatcher.accessibilityFeaturesTestValue =
+        const FakeAccessibilityFeatures(disableAnimations: true);
+    addTearDown(tester.platformDispatcher.clearAccessibilityFeaturesTestValue);
+    final connection = AgentConnection();
+    await tester.pumpWidget(
+      MaterialApp(home: AgentPage(connection: connection)),
+    );
+    connection.receive(
+      jsonEncode({
+        'event': {'type': 'agent_start'},
+      }),
+    );
+    connection.receive(jsonEncode(toolStart('tool-1')));
+    await tester.pumpAndSettle();
+    expect(running('tool-1'), findsOneWidget);
+    expect(find.byType(CircularProgressIndicator), findsNothing);
     expect(tester.takeException(), isNull);
   });
 
@@ -689,9 +860,11 @@ done""",
     expect(find.text('Tool · write · lib/example.dart'), findsOneWidget);
     expect(
       find.byKey(const ValueKey('write-preview-code')),
-      findsOneWidget,
-      reason: 'the newest tool panel starts expanded',
+      findsNothing,
+      reason: 'tool panels start folded',
     );
+    await tester.tap(find.byKey(const ValueKey('tool-panel-write-1')));
+    await tester.pump();
 
     expect(
       find.byKey(const ValueKey('write-preview-filename')),
@@ -753,6 +926,8 @@ done""",
     );
     await tester.pump();
     expect(find.text('Tool · replace · src/example.php'), findsOneWidget);
+    await tester.tap(find.byKey(const ValueKey('tool-panel-replace-1')));
+    await tester.pump();
 
     connection.receive(
       jsonEncode({

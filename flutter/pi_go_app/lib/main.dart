@@ -1,6 +1,8 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:math' as math;
 import 'dart:ui' as ui;
+import 'package:flutter/cupertino.dart' show CupertinoActivityIndicator;
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -18,7 +20,9 @@ import 'browser_workspace.dart';
 import 'browser_live.dart';
 import 'clipboard_images.dart';
 import 'feedback_notifications.dart';
+import 'forge_adaptive.dart';
 import 'forge_fonts.dart';
+import 'forge_theme.dart';
 import 'push_identity.dart';
 import 'push_relay.dart';
 import 'session_crypto.dart';
@@ -37,19 +41,8 @@ class PiGoApp extends StatefulWidget {
 class _PiGoAppState extends State<PiGoApp> {
   final fonts = ForgeFontController();
 
-  ThemeData _theme(Brightness brightness) {
-    final seed = brightness == Brightness.light
-        ? const Color(0xff25765f)
-        : const Color(0xff62d6a7);
-    final base = ThemeData(
-      colorScheme: ColorScheme.fromSeed(
-        seedColor: seed,
-        brightness: brightness,
-      ),
-      useMaterial3: true,
-    );
-    return base.copyWith(textTheme: fonts.apply(base.textTheme));
-  }
+  ThemeData _theme(Brightness brightness) =>
+      forgeTheme(brightness: brightness, fonts: fonts.apply);
 
   @override
   void dispose() {
@@ -167,7 +160,7 @@ class TranscriptItem {
     this.id,
     this.error = false,
     this.collapsed = false,
-    this.collapseManuallySet = false,
+    this.running = false,
     this.toolName,
     this.toolArguments,
     this.toolOutput = '',
@@ -183,7 +176,9 @@ class TranscriptItem {
   String text;
   bool error;
   bool collapsed;
-  bool collapseManuallySet;
+
+  /// A tool call that has started and not yet reported its result.
+  bool running;
   final String? toolName;
   final dynamic toolArguments;
   String toolOutput;
@@ -477,6 +472,7 @@ class AgentConnection extends ChangeNotifier {
     _encryptionRequired = false;
     unawaited(transport?.close());
     streaming = false;
+    _stopRunningTools();
     pendingApproval = null;
     _pushAuthorizationRequest?.completeError(
       error ?? StateError('Connection closed'),
@@ -511,6 +507,7 @@ class AgentConnection extends ChangeNotifier {
     _encryptionRequired = false;
     await transport?.close();
     streaming = false;
+    _stopRunningTools();
     pendingApproval = null;
     _pushAuthorizationRequest?.completeError(StateError('Connection closed'));
     _pushAuthorizationRequest = null;
@@ -1043,10 +1040,7 @@ class AgentConnection extends ChangeNotifier {
       if (response['command'] == 'get_transcript_history') {
         _historyLoading = false;
         if (response['error'] == null && response['historyMessages'] is List) {
-          final older = _transcriptItems(
-            response['historyMessages'],
-            expandLatestTool: false,
-          );
+          final older = _transcriptItems(response['historyMessages']);
           if (older.isNotEmpty) {
             messages.insertAll(0, older);
             if (_activeAssistantIndex != null) {
@@ -1164,10 +1158,7 @@ class AgentConnection extends ChangeNotifier {
     notifyListeners();
   }
 
-  List<TranscriptItem> _transcriptItems(
-    dynamic stored, {
-    bool expandLatestTool = true,
-  }) {
+  List<TranscriptItem> _transcriptItems(dynamic stored) {
     if (stored is! List) return const [];
     final result = <TranscriptItem>[];
     final toolLabels = <String, String>{};
@@ -1228,29 +1219,18 @@ class AgentConnection extends ChangeNotifier {
         ),
       );
     }
-    if (expandLatestTool) _applyAutomaticToolCollapse(result);
     return result;
   }
 
-  void _applyAutomaticToolCollapse(List<TranscriptItem> values) {
-    TranscriptItem? latest;
-    for (final item in values.reversed) {
-      if (item.role.startsWith('Tool ·')) {
-        latest = item;
-        break;
-      }
-    }
-    for (final item in values) {
-      if (!item.role.startsWith('Tool ·') || item.collapseManuallySet) continue;
-      item.collapsed = !identical(item, latest);
+  void _stopRunningTools() {
+    for (final item in messages) {
+      item.running = false;
     }
   }
 
   void setToolCollapsed(TranscriptItem item, bool collapsed) {
     if (!item.role.startsWith('Tool ·')) return;
-    item
-      ..collapsed = collapsed
-      ..collapseManuallySet = true;
+    item.collapsed = collapsed;
     notifyListeners();
   }
 
@@ -1315,6 +1295,8 @@ class AgentConnection extends ChangeNotifier {
         status = 'streaming';
       case 'agent_end':
         streaming = false;
+        // A cancelled or failed turn ends without results for its tools.
+        _stopRunningTools();
         status = event['error'] == null ? 'idle' : '${event['error']}';
       case 'message_start':
         final message = event['message'];
@@ -1363,12 +1345,12 @@ class AgentConnection extends ChangeNotifier {
           'Tool · ${_toolLabel('${event['toolName'] ?? ''}', event['arguments'])}',
           _toolMarkdown('${event['toolName'] ?? ''}', event['arguments'], ''),
           id: '${event['toolCallId'] ?? ''}',
-          collapsed: false,
+          collapsed: true,
+          running: true,
           toolName: '${event['toolName'] ?? ''}',
           toolArguments: event['arguments'],
         );
         messages.add(item);
-        _applyAutomaticToolCollapse(messages);
         status = '${event['toolName']} running · Abort kills the process';
       case 'tool_safety_update':
         _updateToolSafety(event);
@@ -1379,6 +1361,13 @@ class AgentConnection extends ChangeNotifier {
         _updateTool(event, false);
       case 'tool_execution_end':
         _updateTool(event, event['isError'] == true);
+        final finished = '${event['toolCallId'] ?? ''}';
+        for (final item in messages.reversed) {
+          if (item.id == finished) {
+            item.running = false;
+            break;
+          }
+        }
         status = event['isError'] == true
             ? '${event['toolName']} failed gracefully'
             : 'streaming';
@@ -1720,6 +1709,7 @@ class _AgentPageState extends State<AgentPage> with WidgetsBindingObserver {
     );
     _configureConnection(initialAgent);
     prompt.addListener(_promptChanged);
+    promptFocus.addListener(_promptChanged);
     HardwareKeyboard.instance.addHandler(_handleKey);
     WidgetsBinding.instance.addObserver(this);
     if (kIsWeb) {
@@ -1916,38 +1906,26 @@ class _AgentPageState extends State<AgentPage> with WidgetsBindingObserver {
           return;
         }
         _serverTrustDialogOpen = true;
-        final trusted = await showDialog<bool>(
+        final trusted = await showForgeAlert<bool>(
           context: context,
           barrierDismissible: false,
-          builder: (context) => AlertDialog(
-            title: const Text('Trust this agent server?'),
-            content: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text('Endpoint: ${slot.address}'),
-                const SizedBox(height: 8),
-                SelectableText('Agent ID: $serverAgentId'),
-                const SizedBox(height: 8),
-                const Text('P-256 fingerprint:'),
-                SelectableText(fingerprint),
-                const SizedBox(height: 12),
-                const Text(
-                  'Only trust this server if you recognize this endpoint.',
-                ),
-              ],
+          title: 'Trust this agent server?',
+          content: [
+            Text('Endpoint: ${slot.address}'),
+            const SizedBox(height: 8),
+            SelectableText('Agent ID: $serverAgentId'),
+            const SizedBox(height: 8),
+            const Text('P-256 fingerprint:'),
+            SelectableText(fingerprint),
+            const SizedBox(height: 12),
+            const Text(
+              'Only trust this server if you recognize this endpoint.',
             ),
-            actions: [
-              TextButton(
-                onPressed: () => Navigator.pop(context, false),
-                child: const Text('Cancel'),
-              ),
-              FilledButton(
-                onPressed: () => Navigator.pop(context, true),
-                child: const Text('Trust this server'),
-              ),
-            ],
-          ),
+          ],
+          actions: const [
+            ForgeAlertAction('Cancel', false),
+            ForgeAlertAction('Trust this server', true, primary: true),
+          ],
         );
         _serverTrustDialogOpen = false;
         if (trusted != true) {
@@ -2218,37 +2196,25 @@ class _AgentPageState extends State<AgentPage> with WidgetsBindingObserver {
       final fingerprint = agent is Map ? '${agent['fingerprint'] ?? ''}' : '';
       if (!mounted) return;
       _pushPairingDialogOpen = true;
-      final approved = await showDialog<bool>(
+      final approved = await showForgeAlert<bool>(
         context: context,
         barrierDismissible: false,
-        builder: (context) => AlertDialog(
-          title: const Text('Allow device notifications?'),
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                '$agentName wants to send approval-required and session-completed notifications to this device.',
-              ),
-              const SizedBox(height: 12),
-              SelectableText('Verification code: $code'),
-              if (fingerprint.isNotEmpty) ...[
-                const SizedBox(height: 8),
-                SelectableText('Agent fingerprint: $fingerprint'),
-              ],
-            ],
+        title: 'Allow device notifications?',
+        content: [
+          Text(
+            '$agentName wants to send approval-required and session-completed notifications to this device.',
           ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(context, false),
-              child: const Text('Not now'),
-            ),
-            FilledButton(
-              onPressed: () => Navigator.pop(context, true),
-              child: const Text('Allow notifications'),
-            ),
+          const SizedBox(height: 12),
+          SelectableText('Verification code: $code'),
+          if (fingerprint.isNotEmpty) ...[
+            const SizedBox(height: 8),
+            SelectableText('Agent fingerprint: $fingerprint'),
           ],
-        ),
+        ],
+        actions: const [
+          ForgeAlertAction('Not now', false),
+          ForgeAlertAction('Allow notifications', true, primary: true),
+        ],
       );
       _pushPairingDialogOpen = false;
       if (approved != true) return;
@@ -2623,240 +2589,243 @@ class _AgentPageState extends State<AgentPage> with WidgetsBindingObserver {
     BuildContext context,
     ApprovalRequest request,
     String bashCommand,
+    BoxConstraints available,
   ) {
-    final scheme = Theme.of(context).colorScheme;
-    final dark = Theme.of(context).brightness == Brightness.dark;
-    final syntaxTheme = dark ? atomOneDarkReasonableTheme : atomOneLightTheme;
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+    final style = ForgeStyle.of(context);
+    final syntaxTheme = style.dark
+        ? atomOneDarkReasonableTheme
+        : atomOneLightTheme;
     final highlighted = _syntaxSpans(bashCommand, 'bash', syntaxTheme);
-    final codeStyle = TextStyle(
-      fontFamily: 'monospace',
-      fontSize: 13,
-      height: 1.45,
-      color: syntaxTheme['root']?.color,
-    );
+    final codeStyle = style.mono(color: syntaxTheme['root']?.color);
     final mutationPreview = _approvalMutationPreview(request);
-    final bottomInset = MediaQuery.paddingOf(context).bottom;
-    const topRadius = Radius.circular(30);
+    // A phone gets a full-width bottom sheet; a window gets a centred panel.
+    final compact = available.maxWidth < forgeCompactWidth;
+    final bottomInset = compact ? MediaQuery.paddingOf(context).bottom : 0.0;
+    final buttonHeight = style.touch ? 50.0 : 34.0;
+    final buttonShape = RoundedRectangleBorder(
+      borderRadius: BorderRadius.circular(
+        style.touch ? 14 : style.controlRadius,
+      ),
+    );
 
-    return Material(
-      color: Colors.transparent,
-      child: Align(
-        alignment: Alignment.bottomCenter,
-        child: ClipRRect(
-          borderRadius: const BorderRadius.only(
-            topLeft: topRadius,
-            topRight: topRadius,
+    final reject = SizedBox(
+      height: buttonHeight,
+      child: OutlinedButton.icon(
+        key: const ValueKey('approval-reject'),
+        onPressed: () => Navigator.pop(context, false),
+        style: OutlinedButton.styleFrom(
+          foregroundColor: scheme.error,
+          side: BorderSide(color: scheme.error.withValues(alpha: .5)),
+          shape: buttonShape,
+        ),
+        icon: const Icon(Icons.close_rounded),
+        label: const Text('Reject'),
+      ),
+    );
+    final approve = SizedBox(
+      height: buttonHeight,
+      child: FilledButton.icon(
+        key: const ValueKey('approval-approve'),
+        onPressed: () => Navigator.pop(context, true),
+        style: FilledButton.styleFrom(shape: buttonShape),
+        icon: const Icon(Icons.check_rounded),
+        label: const Text('Approve once'),
+      ),
+    );
+
+    final sheet = Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        if (compact) ...[
+          const SizedBox(height: 9),
+          Container(
+            width: 38,
+            height: 5,
+            decoration: BoxDecoration(
+              color: scheme.onSurfaceVariant.withValues(alpha: .35),
+              borderRadius: BorderRadius.circular(99),
+            ),
           ),
-          child: BackdropFilter(
-            filter: ui.ImageFilter.blur(sigmaX: 28, sigmaY: 28),
-            child: Material(
-              key: const ValueKey('approval-toast'),
-              color: (dark ? const Color(0xF5222225) : const Color(0xFAF7F7F8))
-                  .withValues(alpha: .96),
-              child: SizedBox(
-                key: const ValueKey('approval-bottom-sheet'),
-                width: double.infinity,
-                child: ConstrainedBox(
-                  constraints: BoxConstraints(
-                    maxHeight: MediaQuery.sizeOf(context).height * .86,
-                  ),
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
+        ],
+        Padding(
+          padding: EdgeInsets.fromLTRB(20, compact ? 15 : 20, 20, 14),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Container(
+                width: 40,
+                height: 40,
+                decoration: BoxDecoration(
+                  color: scheme.errorContainer,
+                  shape: BoxShape.circle,
+                ),
+                child: Icon(
+                  Icons.shield_outlined,
+                  size: 22,
+                  color: scheme.onErrorContainer,
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      'Safety classifier approval required?',
+                      style: theme.textTheme.titleMedium?.copyWith(
+                        fontWeight: FontWeight.w700,
+                        letterSpacing: -.2,
+                      ),
+                    ),
+                    const SizedBox(height: 3),
+                    Text(
+                      'Forge needs your permission to continue.',
+                      style: theme.textTheme.bodySmall?.copyWith(
+                        color: scheme.onSurfaceVariant,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+        const Divider(height: 1),
+        Flexible(
+          child: SingleChildScrollView(
+            padding: const EdgeInsets.fromLTRB(20, 16, 20, 18),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                if (bashCommand.isNotEmpty) ...[
+                  Row(
                     children: [
-                      const SizedBox(height: 9),
-                      Container(
-                        width: 38,
-                        height: 5,
-                        decoration: BoxDecoration(
-                          color: scheme.onSurfaceVariant.withValues(alpha: .35),
-                          borderRadius: BorderRadius.circular(99),
-                        ),
+                      Icon(
+                        Icons.terminal,
+                        size: 16,
+                        color: scheme.onSurfaceVariant,
                       ),
-                      Padding(
-                        padding: const EdgeInsets.fromLTRB(20, 15, 20, 14),
-                        child: Row(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Container(
-                              width: 42,
-                              height: 42,
-                              decoration: BoxDecoration(
-                                color: scheme.errorContainer,
-                                shape: BoxShape.circle,
-                              ),
-                              child: Icon(
-                                Icons.shield_outlined,
-                                color: scheme.onErrorContainer,
-                              ),
-                            ),
-                            const SizedBox(width: 12),
-                            const Expanded(
-                              child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  Text(
-                                    'Safety classifier approval required?',
-                                    style: TextStyle(
-                                      fontSize: 18,
-                                      fontWeight: FontWeight.w700,
-                                      letterSpacing: -.2,
-                                    ),
-                                  ),
-                                  SizedBox(height: 3),
-                                  Text(
-                                    'Forge needs your permission to continue.',
-                                    style: TextStyle(fontSize: 13),
-                                  ),
-                                ],
-                              ),
-                            ),
-                          ],
-                        ),
+                      const SizedBox(width: 6),
+                      Text('Bash command', style: theme.textTheme.labelLarge),
+                    ],
+                  ),
+                  const SizedBox(height: 7),
+                  Container(
+                    key: const ValueKey('approval-bash-code'),
+                    width: double.infinity,
+                    constraints: const BoxConstraints(maxHeight: 300),
+                    clipBehavior: Clip.antiAlias,
+                    decoration: BoxDecoration(
+                      color:
+                          syntaxTheme['root']?.backgroundColor ??
+                          scheme.surfaceContainerLowest,
+                      borderRadius: BorderRadius.circular(style.codeRadius),
+                      border: Border.all(
+                        color: scheme.outlineVariant,
+                        width: style.hairline,
                       ),
-                      Divider(height: 1, color: scheme.outlineVariant),
-                      Flexible(
+                    ),
+                    child: Scrollbar(
+                      child: SingleChildScrollView(
+                        padding: const EdgeInsets.all(13),
                         child: SingleChildScrollView(
-                          padding: const EdgeInsets.fromLTRB(20, 16, 20, 18),
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              if (bashCommand.isNotEmpty) ...[
-                                Row(
-                                  children: [
-                                    Icon(
-                                      Icons.terminal,
-                                      size: 16,
-                                      color: scheme.onSurfaceVariant,
-                                    ),
-                                    const SizedBox(width: 6),
-                                    Text(
-                                      'Bash command',
-                                      style: Theme.of(
-                                        context,
-                                      ).textTheme.labelLarge,
-                                    ),
-                                  ],
-                                ),
-                                const SizedBox(height: 7),
-                                Container(
-                                  key: const ValueKey('approval-bash-code'),
-                                  width: double.infinity,
-                                  constraints: const BoxConstraints(
-                                    maxHeight: 300,
-                                  ),
-                                  clipBehavior: Clip.antiAlias,
-                                  decoration: BoxDecoration(
-                                    color:
-                                        syntaxTheme['root']?.backgroundColor ??
-                                        scheme.surfaceContainerLowest,
-                                    borderRadius: BorderRadius.circular(14),
-                                    border: Border.all(
-                                      color: scheme.outlineVariant,
-                                    ),
-                                  ),
-                                  child: Scrollbar(
-                                    child: SingleChildScrollView(
-                                      padding: const EdgeInsets.all(13),
-                                      child: SingleChildScrollView(
-                                        scrollDirection: Axis.horizontal,
-                                        child: SelectableText.rich(
-                                          TextSpan(
-                                            style: codeStyle,
-                                            children: highlighted,
-                                          ),
-                                        ),
-                                      ),
-                                    ),
-                                  ),
-                                ),
-                              ],
-                              if (mutationPreview != null) ...[
-                                if (bashCommand.isNotEmpty)
-                                  const SizedBox(height: 16),
-                                mutationPreview,
-                              ],
-                              if ((request.tool != 'bash' ||
-                                      bashCommand.isEmpty) &&
-                                  request.description.trim().isNotEmpty) ...[
-                                const SizedBox(height: 14),
-                                SelectableText(
-                                  request.description,
-                                  style: const TextStyle(
-                                    fontSize: 14,
-                                    height: 1.35,
-                                  ),
-                                ),
-                              ],
-                              const SizedBox(height: 14),
-                              Text(
-                                'Why approval is required',
-                                style: Theme.of(context).textTheme.labelLarge,
-                              ),
-                              const SizedBox(height: 5),
-                              SelectableText(
-                                request.reason,
-                                style: TextStyle(
-                                  color: scheme.onSurfaceVariant,
-                                  fontSize: 13,
-                                  height: 1.35,
-                                ),
-                              ),
-                            ],
+                          scrollDirection: Axis.horizontal,
+                          child: SelectableText.rich(
+                            TextSpan(style: codeStyle, children: highlighted),
                           ),
                         ),
                       ),
-                      Divider(height: 1, color: scheme.outlineVariant),
-                      Padding(
-                        padding: EdgeInsets.fromLTRB(
-                          12,
-                          10,
-                          12,
-                          10 + bottomInset,
-                        ),
-                        child: Row(
-                          children: [
-                            Expanded(
-                              child: SizedBox(
-                                height: 54,
-                                child: OutlinedButton.icon(
-                                  key: const ValueKey('approval-reject'),
-                                  onPressed: () =>
-                                      Navigator.pop(context, false),
-                                  style: OutlinedButton.styleFrom(
-                                    foregroundColor: scheme.error,
-                                    side: BorderSide(
-                                      color: scheme.error.withValues(alpha: .5),
-                                    ),
-                                    shape: RoundedRectangleBorder(
-                                      borderRadius: BorderRadius.circular(16),
-                                    ),
-                                  ),
-                                  icon: const Icon(Icons.close_rounded),
-                                  label: const Text('Reject'),
-                                ),
-                              ),
-                            ),
-                            const SizedBox(width: 10),
-                            Expanded(
-                              child: SizedBox(
-                                height: 54,
-                                child: FilledButton.icon(
-                                  key: const ValueKey('approval-approve'),
-                                  onPressed: () => Navigator.pop(context, true),
-                                  style: FilledButton.styleFrom(
-                                    shape: RoundedRectangleBorder(
-                                      borderRadius: BorderRadius.circular(16),
-                                    ),
-                                  ),
-                                  icon: const Icon(Icons.check_rounded),
-                                  label: const Text('Approve once'),
-                                ),
-                              ),
-                            ),
-                          ],
-                        ),
+                    ),
+                  ),
+                ],
+                if (mutationPreview != null) ...[
+                  if (bashCommand.isNotEmpty) const SizedBox(height: 16),
+                  mutationPreview,
+                ],
+                if ((request.tool != 'bash' || bashCommand.isEmpty) &&
+                    request.description.trim().isNotEmpty) ...[
+                  const SizedBox(height: 14),
+                  SelectableText(
+                    request.description,
+                    style: theme.textTheme.bodyMedium?.copyWith(height: 1.35),
+                  ),
+                ],
+                const SizedBox(height: 14),
+                Text(
+                  'Why approval is required',
+                  style: theme.textTheme.labelLarge,
+                ),
+                const SizedBox(height: 5),
+                SelectableText(
+                  request.reason,
+                  style: theme.textTheme.bodySmall?.copyWith(
+                    color: scheme.onSurfaceVariant,
+                    height: 1.35,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+        const Divider(height: 1),
+        Padding(
+          padding: EdgeInsets.fromLTRB(
+            compact ? 12 : 16,
+            compact ? 10 : 12,
+            compact ? 12 : 16,
+            (compact ? 10 : 12) + bottomInset,
+          ),
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.end,
+            children: compact
+                ? [
+                    Expanded(child: reject),
+                    const SizedBox(width: 10),
+                    Expanded(child: approve),
+                  ]
+                : [reject, const SizedBox(width: 10), approve],
+          ),
+        ),
+      ],
+    );
+
+    final corner = Radius.circular(
+      compact ? style.sheetRadius + 8 : style.dialogRadius,
+    );
+    return Material(
+      color: Colors.transparent,
+      child: Align(
+        alignment: compact ? Alignment.bottomCenter : Alignment.center,
+        child: Padding(
+          padding: compact ? EdgeInsets.zero : const EdgeInsets.all(24),
+          child: ConstrainedBox(
+            constraints: BoxConstraints(
+              maxWidth: compact ? double.infinity : 640,
+            ),
+            child: ClipRRect(
+              borderRadius: compact
+                  ? BorderRadius.vertical(top: corner)
+                  : BorderRadius.all(corner),
+              child: BackdropFilter(
+                filter: ui.ImageFilter.blur(sigmaX: 28, sigmaY: 28),
+                child: Material(
+                  key: const ValueKey('approval-toast'),
+                  color:
+                      (style.dark
+                              ? const Color(0xF5222225)
+                              : const Color(0xFAF7F7F8))
+                          .withValues(alpha: .96),
+                  child: SizedBox(
+                    key: const ValueKey('approval-bottom-sheet'),
+                    width: double.infinity,
+                    child: ConstrainedBox(
+                      constraints: BoxConstraints(
+                        maxHeight: available.maxHeight * .86,
                       ),
-                    ],
+                      child: sheet,
+                    ),
                   ),
                 ),
               ),
@@ -2881,8 +2850,10 @@ class _AgentPageState extends State<AgentPage> with WidgetsBindingObserver {
       barrierLabel: 'Safety approval required',
       barrierColor: Colors.black.withValues(alpha: .34),
       transitionDuration: const Duration(milliseconds: 240),
-      pageBuilder: (context, animation, secondaryAnimation) =>
-          _approvalToast(context, request, bashCommand),
+      pageBuilder: (context, animation, secondaryAnimation) => LayoutBuilder(
+        builder: (context, available) =>
+            _approvalToast(context, request, bashCommand, available),
+      ),
       transitionBuilder: (context, animation, secondaryAnimation, child) {
         final curved = CurvedAnimation(
           parent: animation,
@@ -3055,26 +3026,20 @@ class _AgentPageState extends State<AgentPage> with WidgetsBindingObserver {
         slot.connection.endpointKind != ConnectionKind.local) {
       return true;
     }
-    return await showDialog<bool>(
+    return await showForgeAlert<bool>(
           context: context,
-          builder: (context) => AlertDialog(
-            title: const Text('Stop local agent?'),
-            content: const Text(
+          title: 'Stop local agent?',
+          content: const [
+            Text(
               'Disconnecting this local connection stops the bundled '
               'pi-go-agent, including any active response or tool. Remote '
               'servers are never stopped when their connection closes.',
             ),
-            actions: [
-              TextButton(
-                onPressed: () => Navigator.pop(context, false),
-                child: const Text('Keep connected'),
-              ),
-              FilledButton(
-                onPressed: () => Navigator.pop(context, true),
-                child: const Text('Disconnect and stop'),
-              ),
-            ],
-          ),
+          ],
+          actions: const [
+            ForgeAlertAction('Keep connected', false),
+            ForgeAlertAction('Disconnect and stop', true, destructive: true),
+          ],
         ) ??
         false;
   }
@@ -3093,26 +3058,20 @@ class _AgentPageState extends State<AgentPage> with WidgetsBindingObserver {
     slot.kind = connectionKind;
     slot.address = address.text.trim();
     if (connectionKind == ConnectionKind.local) {
-      final proceed = await showDialog<bool>(
+      final proceed = await showForgeAlert<bool>(
         context: context,
-        builder: (context) => AlertDialog(
-          title: const Text('Start bundled local agent?'),
-          content: const Text(
+        title: 'Start bundled local agent?',
+        content: const [
+          Text(
             'Forge will start its bundled pi-go-agent with your home directory '
             'as the workspace. Disconnecting this local connection or closing '
             'Forge stops that agent and aborts any active work.',
           ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(context, false),
-              child: const Text('Cancel'),
-            ),
-            FilledButton(
-              onPressed: () => Navigator.pop(context, true),
-              child: const Text('Start local agent'),
-            ),
-          ],
-        ),
+        ],
+        actions: const [
+          ForgeAlertAction('Cancel', false),
+          ForgeAlertAction('Start local agent', true, primary: true),
+        ],
       );
       if (proceed != true) return;
     }
@@ -3133,24 +3092,18 @@ class _AgentPageState extends State<AgentPage> with WidgetsBindingObserver {
   Future<void> _forgetTrustedServer(String endpoint) async {
     final trust = trustedServers[endpoint];
     if (trust == null) return;
-    final confirmed = await showDialog<bool>(
+    final confirmed = await showForgeAlert<bool>(
       context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Forget trusted server identity?'),
-        content: Text(
+      title: 'Forget trusted server identity?',
+      content: [
+        Text(
           'The next connection to $endpoint will ask you to trust its server fingerprint again.',
         ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context, false),
-            child: const Text('Cancel'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.pop(context, true),
-            child: const Text('Forget identity'),
-          ),
-        ],
-      ),
+      ],
+      actions: const [
+        ForgeAlertAction('Cancel', false),
+        ForgeAlertAction('Forget identity', true, destructive: true),
+      ],
     );
     if (confirmed != true) return;
     for (final slot in connections) {
@@ -3169,87 +3122,99 @@ class _AgentPageState extends State<AgentPage> with WidgetsBindingObserver {
   }
 
   Future<void> _showTrustedServers() async {
-    await showDialog<void>(
+    await showForgeSheet<void>(
       context: context,
       builder: (dialogContext) => StatefulBuilder(
         builder: (dialogContext, setDialogState) {
           final trusted = trustedServers.values.toList();
-          return AlertDialog(
-            title: const Row(
-              children: [
-                Icon(Icons.verified_user_outlined),
-                SizedBox(width: 10),
-                Expanded(child: Text('Trusted servers')),
-              ],
-            ),
-            content: SizedBox(
-              width: 620,
-              child: trusted.isEmpty
-                  ? const Padding(
-                      padding: EdgeInsets.symmetric(vertical: 28),
-                      child: Center(
-                        child: Text('No trusted server identities'),
-                      ),
-                    )
-                  : ListView.separated(
-                      shrinkWrap: true,
-                      itemCount: trusted.length,
-                      separatorBuilder: (_, _) => const Divider(height: 24),
-                      itemBuilder: (context, itemIndex) {
-                        final trust = trusted[itemIndex];
-                        final endpoint = trust.endpoint;
-                        return Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Row(
-                              children: [
-                                const Icon(Icons.dns_outlined, size: 20),
-                                const SizedBox(width: 8),
-                                Expanded(
-                                  child: Text(
-                                    endpoint,
-                                    style: Theme.of(
-                                      context,
-                                    ).textTheme.titleSmall,
-                                  ),
-                                ),
-                                IconButton(
-                                  tooltip: 'Delete trusted server',
-                                  icon: const Icon(Icons.delete_outline),
-                                  onPressed: () async {
-                                    await _forgetTrustedServer(endpoint);
-                                    if (dialogContext.mounted) {
-                                      setDialogState(() {});
-                                    }
-                                  },
-                                ),
-                              ],
-                            ),
-                            if (trust.agentId.isNotEmpty) ...[
-                              const SizedBox(height: 8),
-                              Text(
-                                'Agent ID',
-                                style: Theme.of(context).textTheme.labelMedium,
-                              ),
-                              SelectableText(trust.agentId),
-                            ],
-                            const SizedBox(height: 8),
-                            Text(
-                              'P-256 fingerprint',
-                              style: Theme.of(context).textTheme.labelMedium,
-                            ),
-                            SelectableText(trust.fingerprint),
-                          ],
-                        );
-                      },
-                    ),
-            ),
+          final theme = Theme.of(dialogContext);
+          return ForgeSheet(
+            title: 'Trusted servers',
+            icon: Icons.verified_user_outlined,
             actions: [
               TextButton(
                 onPressed: () => Navigator.of(dialogContext).pop(),
                 child: const Text('Done'),
               ),
             ],
+            child: trusted.isEmpty
+                ? Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 28),
+                    child: Center(
+                      child: Text(
+                        'No trusted server identities',
+                        style: TextStyle(
+                          color: theme.colorScheme.onSurfaceVariant,
+                        ),
+                      ),
+                    ),
+                  )
+                : ListView.separated(
+                    shrinkWrap: true,
+                    itemCount: trusted.length,
+                    separatorBuilder: (_, _) => const SizedBox(height: 10),
+                    itemBuilder: (context, itemIndex) {
+                      final trust = trusted[itemIndex];
+                      final endpoint = trust.endpoint;
+                      return Card(
+                        margin: EdgeInsets.zero,
+                        child: Padding(
+                          padding: const EdgeInsets.fromLTRB(14, 6, 6, 14),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Row(
+                                children: [
+                                  Icon(
+                                    Icons.dns_outlined,
+                                    size: 18,
+                                    color: theme.colorScheme.onSurfaceVariant,
+                                  ),
+                                  const SizedBox(width: 8),
+                                  Expanded(
+                                    child: Text(
+                                      endpoint,
+                                      style: theme.textTheme.titleSmall,
+                                    ),
+                                  ),
+                                  IconButton(
+                                    tooltip: 'Delete trusted server',
+                                    icon: const Icon(Icons.delete_outline),
+                                    onPressed: () async {
+                                      await _forgetTrustedServer(endpoint);
+                                      if (dialogContext.mounted) {
+                                        setDialogState(() {});
+                                      }
+                                    },
+                                  ),
+                                ],
+                              ),
+                              Padding(
+                                padding: const EdgeInsets.only(right: 8),
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    if (trust.agentId.isNotEmpty) ...[
+                                      const SizedBox(height: 4),
+                                      ForgeCopyableValue(
+                                        label: 'Agent ID',
+                                        value: trust.agentId,
+                                      ),
+                                    ],
+                                    const SizedBox(height: 8),
+                                    ForgeCopyableValue(
+                                      label: 'P-256 fingerprint',
+                                      value: trust.fingerprint,
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      );
+                    },
+                  ),
           );
         },
       ),
@@ -3257,71 +3222,80 @@ class _AgentPageState extends State<AgentPage> with WidgetsBindingObserver {
   }
 
   Future<void> _showConnections() async {
-    await showDialog<void>(
+    await showForgeSheet<void>(
       context: context,
       builder: (dialogContext) => StatefulBuilder(
-        builder: (dialogContext, setDialogState) => AlertDialog(
-          title: Row(
-            children: [
-              const Expanded(child: Text('Connections')),
+        builder: (dialogContext, setDialogState) {
+          final theme = Theme.of(dialogContext);
+          final style = ForgeStyle.of(dialogContext);
+          return ForgeSheet(
+            title: 'Connections',
+            titleActions: [
               IconButton(
                 tooltip: 'Manage trusted servers',
                 onPressed: _showTrustedServers,
                 icon: const Icon(Icons.key_outlined),
               ),
             ],
-          ),
-          content: SizedBox(
-            width: 620,
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                for (var index = 0; index < connections.length; index++)
-                  ListTile(
-                    selected: index == activeConnectionIndex,
-                    leading: Icon(
-                      connections[index].connection.connected
-                          ? Icons.lan_outlined
-                          : Icons.link_off,
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.of(dialogContext).pop(),
+                child: const Text('Done'),
+              ),
+              FilledButton.icon(
+                onPressed: connections.length < 2 ? _addConnection : null,
+                icon: const Icon(Icons.add),
+                label: const Text('New connection'),
+              ),
+            ],
+            padded: false,
+            child: SingleChildScrollView(
+              padding: const EdgeInsets.symmetric(horizontal: 12),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  for (var index = 0; index < connections.length; index++)
+                    ListTile(
+                      selected: index == activeConnectionIndex,
+                      leading: Icon(
+                        connections[index].connection.connected
+                            ? Icons.lan_outlined
+                            : Icons.link_off,
+                        color: connections[index].connection.connected
+                            ? style.successColor
+                            : null,
+                      ),
+                      title: Text(
+                        _connectionTitle(connections[index], index),
+                        style: theme.textTheme.titleSmall,
+                      ),
+                      subtitle: Text(
+                        connections[index].connection.connected
+                            ? connections[index].connection.status
+                            : 'Not connected',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                      onTap: () => _switchConnection(index),
+                      trailing: IconButton(
+                        tooltip: 'Close connection',
+                        icon: const Icon(Icons.close),
+                        onPressed: () async {
+                          await _closeConnection(index);
+                          if (!dialogContext.mounted) return;
+                          if (connections.isEmpty) {
+                            Navigator.of(dialogContext).pop();
+                          } else {
+                            setDialogState(() {});
+                          }
+                        },
+                      ),
                     ),
-                    title: Text(_connectionTitle(connections[index], index)),
-                    subtitle: Text(
-                      connections[index].connection.connected
-                          ? connections[index].connection.status
-                          : 'Not connected',
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                    ),
-                    onTap: () => _switchConnection(index),
-                    trailing: IconButton(
-                      tooltip: 'Close connection',
-                      icon: const Icon(Icons.close),
-                      onPressed: () async {
-                        await _closeConnection(index);
-                        if (!dialogContext.mounted) return;
-                        if (connections.isEmpty) {
-                          Navigator.of(dialogContext).pop();
-                        } else {
-                          setDialogState(() {});
-                        }
-                      },
-                    ),
-                  ),
-              ],
+                ],
+              ),
             ),
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.of(dialogContext).pop(),
-              child: const Text('Done'),
-            ),
-            FilledButton.icon(
-              onPressed: connections.length < 2 ? _addConnection : null,
-              icon: const Icon(Icons.add),
-              label: const Text('New connection'),
-            ),
-          ],
-        ),
+          );
+        },
       ),
     );
   }
@@ -3329,16 +3303,40 @@ class _AgentPageState extends State<AgentPage> with WidgetsBindingObserver {
   Widget _connectionManagerButton(bool compact) => Badge(
     isLabelVisible: _connectedCount > 0,
     label: Text('$_connectedCount'),
-    child: IconButton.outlined(
-      padding: compact ? EdgeInsets.zero : null,
-      constraints: compact
-          ? const BoxConstraints.tightFor(width: 40, height: 40)
-          : null,
+    offset: const Offset(-2, 2),
+    child: _toolbarIconButton(
       tooltip: 'Manage connections',
       onPressed: _showConnections,
-      icon: Icon(agent.connected ? Icons.lan_outlined : Icons.link_off),
+      icon: agent.connected ? Icons.lan_outlined : Icons.link_off,
     ),
   );
+
+  /// A square toolbar button sized for the platform's pointer or finger.
+  Widget _toolbarIconButton({
+    required String tooltip,
+    required IconData icon,
+    required VoidCallback? onPressed,
+    Color? background,
+    Color? foreground,
+  }) {
+    final style = ForgeStyle.of(context);
+    return IconButton(
+      padding: EdgeInsets.zero,
+      constraints: BoxConstraints.tightFor(
+        width: style.controlHeight,
+        height: style.controlHeight,
+      ),
+      iconSize: style.toolbarIconSize,
+      tooltip: tooltip,
+      onPressed: onPressed,
+      style: IconButton.styleFrom(
+        backgroundColor: background,
+        foregroundColor:
+            foreground ?? Theme.of(context).colorScheme.onSurfaceVariant,
+      ),
+      icon: Icon(icon),
+    );
+  }
 
   void _sessionNotification(
     AgentConnection connection,
@@ -3557,35 +3555,30 @@ class _AgentPageState extends State<AgentPage> with WidgetsBindingObserver {
   }
 
   Future<void> _showThinkingLevels() async {
-    final selected = await showDialog<String>(
+    final selected = await showForgeSheet<String>(
       context: context,
-      builder: (dialogContext) => AlertDialog(
-        title: const Text('Thinking effort'),
-        content: SizedBox(
-          width: 320,
-          child: ListView(
-            shrinkWrap: true,
-            children: [
-              for (final level in thinkingLevels)
-                ListTile(
-                  selected: level == agent.currentThinking,
-                  leading: Icon(
-                    level == agent.currentThinking
-                        ? Icons.radio_button_checked
-                        : Icons.radio_button_unchecked,
-                  ),
-                  title: Text(level),
-                  onTap: () => Navigator.pop(dialogContext, level),
-                ),
-            ],
-          ),
-        ),
+      builder: (dialogContext) => ForgeSheet(
+        title: 'Thinking effort',
+        width: 360,
+        padded: false,
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(dialogContext),
             child: const Text('Cancel'),
           ),
         ],
+        child: ListView(
+          shrinkWrap: true,
+          padding: const EdgeInsets.symmetric(horizontal: 12),
+          children: [
+            for (final level in thinkingLevels)
+              ForgeChoiceTile(
+                title: level,
+                selected: level == agent.currentThinking,
+                onTap: () => Navigator.pop(dialogContext, level),
+              ),
+          ],
+        ),
       ),
     );
     if (selected != null && selected != agent.currentThinking) {
@@ -3593,172 +3586,191 @@ class _AgentPageState extends State<AgentPage> with WidgetsBindingObserver {
     }
   }
 
-  Future<void> _showAccount() async {
-    if (!agent.connected) return;
-    agent.refreshProviderConfiguration();
-    await showDialog<void>(
-      context: context,
-      builder: (dialogContext) => ListenableBuilder(
-        listenable: agent,
-        builder: (context, _) => AlertDialog(
-          title: const Text('Providers'),
-          content: SizedBox(
-            width: 620,
-            child: SingleChildScrollView(
+  /// One provider in the provider list: what it is, its state, one action.
+  Widget _providerRow({
+    required IconData icon,
+    required String title,
+    required String subtitle,
+    required Widget action,
+    bool ready = false,
+  }) {
+    final theme = Theme.of(context);
+    final style = ForgeStyle.of(context);
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(14, 10, 10, 10),
+        child: Row(
+          children: [
+            Container(
+              width: 36,
+              height: 36,
+              decoration: BoxDecoration(
+                color: theme.colorScheme.surfaceContainerHigh,
+                borderRadius: BorderRadius.circular(style.controlRadius),
+              ),
+              child: Icon(
+                icon,
+                size: 20,
+                color: ready
+                    ? theme.colorScheme.primary
+                    : theme.colorScheme.onSurfaceVariant,
+              ),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
               child: Column(
-                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Card(
-                    child: ListTile(
-                      leading: Icon(
-                        agent.authenticated
-                            ? Icons.account_circle
-                            : Icons.login,
-                      ),
-                      title: const Text('OpenAI Codex'),
-                      subtitle: Text(
-                        agent.authenticated
-                            ? agent.authAccountID.isEmpty
-                                  ? 'Signed in'
-                                  : 'Signed in · ${agent.authAccountID}'
-                            : 'Not signed in',
-                      ),
-                      trailing: agent.authenticated
-                          ? TextButton(
-                              onPressed: () => agent.logout(),
-                              child: const Text('Sign out'),
-                            )
-                          : FilledButton(
-                              onPressed: () {
-                                agent.login();
-                                Navigator.pop(dialogContext);
-                                _showDeviceLogin();
-                              },
-                              child: const Text('Sign in'),
-                            ),
-                    ),
-                  ),
-                  Card(
-                    child: ListTile(
-                      leading: const Icon(Icons.auto_awesome_outlined),
-                      title: const Text('Antigravity · Gemini'),
-                      subtitle: Text(
-                        agent.agyReady
-                            ? 'Ready · Gemini models are available'
-                            : agent.agyInstalled
-                            ? 'Sign in on the agent server to use Gemini'
-                            : 'Install agy on the agent server to use Gemini',
-                      ),
-                      trailing: TextButton(
-                        onPressed: () {
-                          Navigator.pop(dialogContext);
-                          _showAgySetup();
-                        },
-                        child: Text(agent.agyReady ? 'Details' : 'Set up'),
-                      ),
-                    ),
-                  ),
-                  Card(
-                    child: ListTile(
-                      leading: const Icon(Icons.smart_toy_outlined),
-                      title: const Text('Claude Code'),
-                      subtitle: Text(
-                        agent.claudeReady
-                            ? 'Ready · Claude models are available'
-                            : agent.claudeInstalled
-                            ? 'Sign in on the agent server to use Claude'
-                            : 'Install Claude Code on the agent server',
-                      ),
-                      trailing: TextButton(
-                        onPressed: () {
-                          Navigator.pop(dialogContext);
-                          _showClaudeSetup();
-                        },
-                        child: Text(agent.claudeReady ? 'Details' : 'Set up'),
-                      ),
-                    ),
-                  ),
-                  for (final config in agent.apiProviders)
-                    Card(
-                      child: ListTile(
-                        leading: const Icon(Icons.cloud_outlined),
-                        title: Text('(API) ${config.name}'),
-                        subtitle: Text(
-                          config.configured
-                              ? 'API key configured · ${config.models.length} models'
-                              : 'API key not configured',
-                        ),
-                        trailing: FilledButton.tonal(
-                          onPressed: () {
-                            Navigator.pop(dialogContext);
-                            _showAPIProvider(config);
-                          },
-                          child: const Text('Configure'),
-                        ),
-                      ),
-                    ),
-                  const SizedBox(height: 6),
-                  SizedBox(
-                    width: double.infinity,
-                    child: OutlinedButton.icon(
-                      onPressed: () {
-                        Navigator.pop(dialogContext);
-                        _showAPIProvider(null);
-                      },
-                      icon: const Icon(Icons.add),
-                      label: const Text('Add API provider'),
+                  Text(title, style: theme.textTheme.titleSmall),
+                  const SizedBox(height: 2),
+                  Text(
+                    subtitle,
+                    style: theme.textTheme.bodySmall?.copyWith(
+                      color: theme.colorScheme.onSurfaceVariant,
                     ),
                   ),
                 ],
               ),
             ),
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(dialogContext),
-              child: const Text('Close'),
-            ),
+            const SizedBox(width: 8),
+            action,
           ],
         ),
       ),
     );
   }
 
-  Future<void> _showClaudeSetup() async {
+  Future<void> _showAccount() async {
     if (!agent.connected) return;
     agent.refreshProviderConfiguration();
-    await showDialog<void>(
+    await showForgeSheet<void>(
       context: context,
       builder: (dialogContext) => ListenableBuilder(
         listenable: agent,
-        builder: (context, _) => AlertDialog(
-          title: const Text('Set up Claude Code'),
-          content: SizedBox(
-            width: 560,
+        builder: (context, _) => ForgeSheet(
+          title: 'Providers',
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext),
+              child: const Text('Close'),
+            ),
+          ],
+          child: SingleChildScrollView(
             child: Column(
               mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(
-                  agent.claudeSetupMessage.isEmpty
-                      ? 'Checking Claude Code on the agent server…'
-                      : agent.claudeSetupMessage,
+                _providerRow(
+                  icon: agent.authenticated
+                      ? Icons.account_circle
+                      : Icons.login,
+                  title: 'OpenAI Codex',
+                  subtitle: agent.authenticated
+                      ? agent.authAccountID.isEmpty
+                            ? 'Signed in'
+                            : 'Signed in · ${agent.authAccountID}'
+                      : 'Not signed in',
+                  ready: agent.authenticated,
+                  action: agent.authenticated
+                      ? TextButton(
+                          onPressed: () => agent.logout(),
+                          child: const Text('Sign out'),
+                        )
+                      : FilledButton(
+                          onPressed: () {
+                            agent.login();
+                            Navigator.pop(dialogContext);
+                            _showDeviceLogin();
+                          },
+                          child: const Text('Sign in'),
+                        ),
                 ),
-                if (!agent.claudeReady) ...[
-                  const SizedBox(height: 14),
-                  const Text(
-                    'Run this command in a terminal on the agent server:',
+                _providerRow(
+                  icon: Icons.auto_awesome_outlined,
+                  title: 'Antigravity · Gemini',
+                  subtitle: agent.agyReady
+                      ? 'Ready · Gemini models are available'
+                      : agent.agyInstalled
+                      ? 'Sign in on the agent server to use Gemini'
+                      : 'Install agy on the agent server to use Gemini',
+                  ready: agent.agyReady,
+                  action: TextButton(
+                    onPressed: () {
+                      Navigator.pop(dialogContext);
+                      _showAgySetup();
+                    },
+                    child: Text(agent.agyReady ? 'Details' : 'Set up'),
                   ),
-                  const SizedBox(height: 8),
-                  SelectableText(
-                    agent.claudeSetupCommand.isEmpty
-                        ? 'Checking setup instructions…'
-                        : agent.claudeSetupCommand,
+                ),
+                _providerRow(
+                  icon: Icons.smart_toy_outlined,
+                  title: 'Claude Code',
+                  subtitle: agent.claudeReady
+                      ? 'Ready · Claude models are available'
+                      : agent.claudeInstalled
+                      ? 'Sign in on the agent server to use Claude'
+                      : 'Install Claude Code on the agent server',
+                  ready: agent.claudeReady,
+                  action: TextButton(
+                    onPressed: () {
+                      Navigator.pop(dialogContext);
+                      _showClaudeSetup();
+                    },
+                    child: Text(agent.claudeReady ? 'Details' : 'Set up'),
                   ),
-                ],
+                ),
+                for (final config in agent.apiProviders)
+                  _providerRow(
+                    icon: Icons.cloud_outlined,
+                    title: '(API) ${config.name}',
+                    subtitle: config.configured
+                        ? 'API key configured · ${config.models.length} models'
+                        : 'API key not configured',
+                    ready: config.configured,
+                    action: FilledButton.tonal(
+                      onPressed: () {
+                        Navigator.pop(dialogContext);
+                        _showAPIProvider(config);
+                      },
+                      child: const Text('Configure'),
+                    ),
+                  ),
+                const SizedBox(height: 8),
+                SizedBox(
+                  width: double.infinity,
+                  child: OutlinedButton.icon(
+                    onPressed: () {
+                      Navigator.pop(dialogContext);
+                      _showAPIProvider(null);
+                    },
+                    icon: const Icon(Icons.add),
+                    label: const Text('Add API provider'),
+                  ),
+                ),
               ],
             ),
           ),
+        ),
+      ),
+    );
+  }
+
+  /// Setup state of a CLI provider that is installed on the agent server.
+  Future<void> _showServerSetup({
+    required String title,
+    required String Function() message,
+    required String Function() command,
+    required bool Function() ready,
+    required String checking,
+  }) async {
+    if (!agent.connected) return;
+    agent.refreshProviderConfiguration();
+    await showForgeSheet<void>(
+      context: context,
+      builder: (dialogContext) => ListenableBuilder(
+        listenable: agent,
+        builder: (context, _) => ForgeSheet(
+          title: title,
+          width: 560,
           actions: [
             TextButton(
               onPressed: agent.refreshProviderConfiguration,
@@ -3769,60 +3781,47 @@ class _AgentPageState extends State<AgentPage> with WidgetsBindingObserver {
               child: const Text('Close'),
             ),
           ],
-        ),
-      ),
-    );
-  }
-
-  Future<void> _showAgySetup() async {
-    if (!agent.connected) return;
-    agent.refreshProviderConfiguration();
-    await showDialog<void>(
-      context: context,
-      builder: (dialogContext) => ListenableBuilder(
-        listenable: agent,
-        builder: (context, _) => AlertDialog(
-          title: const Text('Set up Antigravity · Gemini'),
-          content: SizedBox(
-            width: 560,
+          child: SingleChildScrollView(
             child: Column(
               mainAxisSize: MainAxisSize.min,
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(
-                  agent.agySetupMessage.isEmpty
-                      ? 'Checking agy on the agent server…'
-                      : agent.agySetupMessage,
-                ),
-                if (!agent.agyReady) ...[
+                Text(message().isEmpty ? checking : message()),
+                if (!ready()) ...[
                   const SizedBox(height: 14),
                   const Text(
                     'Run this command in a terminal on the agent server:',
                   ),
                   const SizedBox(height: 8),
-                  SelectableText(
-                    agent.agySetupCommand.isEmpty
+                  ForgeCopyableValue(
+                    value: command().isEmpty
                         ? 'Checking setup instructions…'
-                        : agent.agySetupCommand,
+                        : command(),
                   ),
                 ],
               ],
             ),
           ),
-          actions: [
-            TextButton(
-              onPressed: agent.refreshProviderConfiguration,
-              child: const Text('Refresh'),
-            ),
-            TextButton(
-              onPressed: () => Navigator.pop(dialogContext),
-              child: const Text('Close'),
-            ),
-          ],
         ),
       ),
     );
   }
+
+  Future<void> _showClaudeSetup() => _showServerSetup(
+    title: 'Set up Claude Code',
+    message: () => agent.claudeSetupMessage,
+    command: () => agent.claudeSetupCommand,
+    ready: () => agent.claudeReady,
+    checking: 'Checking Claude Code on the agent server…',
+  );
+
+  Future<void> _showAgySetup() => _showServerSetup(
+    title: 'Set up Antigravity · Gemini',
+    message: () => agent.agySetupMessage,
+    command: () => agent.agySetupCommand,
+    ready: () => agent.agyReady,
+    checking: 'Checking agy on the agent server…',
+  );
 
   Future<void> _showAPIProvider(APIProviderConfig? existing) async {
     final name = TextEditingController(text: existing?.name ?? '');
@@ -3841,123 +3840,12 @@ class _AgentPageState extends State<AgentPage> with WidgetsBindingObserver {
     );
     var protocol = existing?.protocol ?? 'openai';
     var clearAPIKey = false;
-    await showDialog<void>(
+    await showForgeSheet<void>(
       context: context,
       builder: (dialogContext) => StatefulBuilder(
-        builder: (context, setDialogState) => AlertDialog(
-          title: Text(
-            existing == null ? 'Add (API)' : '(API) ${existing.name}',
-          ),
-          content: SizedBox(
-            width: 680,
-            child: SingleChildScrollView(
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  TextField(
-                    controller: name,
-                    enabled: existing == null,
-                    decoration: const InputDecoration(
-                      labelText: 'Provider name',
-                      helperText:
-                          'Models use Provider-Name/model. Letters, numbers, hyphens, and underscores only.',
-                      border: OutlineInputBorder(),
-                    ),
-                  ),
-                  const SizedBox(height: 12),
-                  Text(
-                    existing?.apiKeyConfigured == true
-                        ? 'API key configured. Leave empty to keep it.'
-                        : 'Enter the API key.',
-                  ),
-                  const SizedBox(height: 8),
-                  TextField(
-                    controller: apiKey,
-                    obscureText: true,
-                    enableSuggestions: false,
-                    autocorrect: false,
-                    decoration: const InputDecoration(
-                      labelText: 'API key (write-only)',
-                      border: OutlineInputBorder(),
-                    ),
-                  ),
-                  if (existing != null)
-                    CheckboxListTile(
-                      contentPadding: EdgeInsets.zero,
-                      value: clearAPIKey,
-                      onChanged: (value) =>
-                          setDialogState(() => clearAPIKey = value == true),
-                      title: const Text('Clear stored API key'),
-                    ),
-                  DropdownButtonFormField<String>(
-                    initialValue: protocol,
-                    decoration: const InputDecoration(
-                      labelText: 'Protocol',
-                      border: OutlineInputBorder(),
-                    ),
-                    items: const [
-                      DropdownMenuItem(
-                        value: 'openai',
-                        child: Text('OpenAI-compatible'),
-                      ),
-                      DropdownMenuItem(
-                        value: 'anthropic',
-                        child: Text('Anthropic-compatible (coming next)'),
-                      ),
-                    ],
-                    onChanged: (value) =>
-                        setDialogState(() => protocol = value ?? 'openai'),
-                  ),
-                  const SizedBox(height: 12),
-                  TextField(
-                    controller: openAI,
-                    decoration: const InputDecoration(
-                      labelText: 'OpenAI-compatible base URL',
-                      border: OutlineInputBorder(),
-                    ),
-                  ),
-                  const SizedBox(height: 12),
-                  TextField(
-                    controller: anthropic,
-                    decoration: const InputDecoration(
-                      labelText: 'Anthropic-compatible base URL',
-                      border: OutlineInputBorder(),
-                    ),
-                  ),
-                  const SizedBox(height: 12),
-                  TextField(
-                    controller: defaultModel,
-                    decoration: const InputDecoration(
-                      labelText: 'Default model ID',
-                      border: OutlineInputBorder(),
-                    ),
-                  ),
-                  const SizedBox(height: 12),
-                  TextField(
-                    controller: models,
-                    minLines: 3,
-                    maxLines: 8,
-                    decoration: const InputDecoration(
-                      labelText: 'Supported model IDs (one per line)',
-                      border: OutlineInputBorder(),
-                    ),
-                  ),
-                  const SizedBox(height: 8),
-                  OutlinedButton.icon(
-                    onPressed: existing?.configured == true
-                        ? () {
-                            agent.fetchAPIProviderModels(existing!.name);
-                            Navigator.pop(dialogContext);
-                          }
-                        : null,
-                    icon: const Icon(Icons.refresh),
-                    label: const Text('Fetch models from OpenAI endpoint'),
-                  ),
-                ],
-              ),
-            ),
-          ),
+        builder: (context, setDialogState) => ForgeSheet(
+          title: existing == null ? 'Add (API)' : '(API) ${existing.name}',
+          width: 680,
           actions: [
             if (existing != null)
               TextButton(
@@ -3965,6 +3853,9 @@ class _AgentPageState extends State<AgentPage> with WidgetsBindingObserver {
                   agent.deleteAPIProvider(existing.name);
                   Navigator.pop(dialogContext);
                 },
+                style: TextButton.styleFrom(
+                  foregroundColor: Theme.of(context).colorScheme.error,
+                ),
                 child: const Text('Delete'),
               ),
             TextButton(
@@ -3992,6 +3883,117 @@ class _AgentPageState extends State<AgentPage> with WidgetsBindingObserver {
               child: const Text('Save'),
             ),
           ],
+          child: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                TextField(
+                  controller: name,
+                  enabled: existing == null,
+                  autocorrect: false,
+                  decoration: const InputDecoration(
+                    labelText: 'Provider name',
+                    helperText:
+                        'Models use Provider-Name/model. Letters, numbers, hyphens, and underscores only.',
+                  ),
+                ),
+                const SizedBox(height: 14),
+                Text(
+                  existing?.apiKeyConfigured == true
+                      ? 'API key configured. Leave empty to keep it.'
+                      : 'Enter the API key.',
+                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                    color: Theme.of(context).colorScheme.onSurfaceVariant,
+                  ),
+                ),
+                const SizedBox(height: 6),
+                TextField(
+                  controller: apiKey,
+                  obscureText: true,
+                  enableSuggestions: false,
+                  autocorrect: false,
+                  decoration: const InputDecoration(
+                    labelText: 'API key (write-only)',
+                  ),
+                ),
+                if (existing != null)
+                  CheckboxListTile.adaptive(
+                    contentPadding: EdgeInsets.zero,
+                    value: clearAPIKey,
+                    onChanged: (value) =>
+                        setDialogState(() => clearAPIKey = value == true),
+                    title: const Text('Clear stored API key'),
+                  ),
+                const SizedBox(height: 12),
+                DropdownButtonFormField<String>(
+                  initialValue: protocol,
+                  isExpanded: true,
+                  decoration: const InputDecoration(labelText: 'Protocol'),
+                  items: const [
+                    DropdownMenuItem(
+                      value: 'openai',
+                      child: Text('OpenAI-compatible'),
+                    ),
+                    DropdownMenuItem(
+                      value: 'anthropic',
+                      child: Text('Anthropic-compatible (coming next)'),
+                    ),
+                  ],
+                  onChanged: (value) =>
+                      setDialogState(() => protocol = value ?? 'openai'),
+                ),
+                const SizedBox(height: 12),
+                TextField(
+                  controller: openAI,
+                  autocorrect: false,
+                  keyboardType: TextInputType.url,
+                  decoration: const InputDecoration(
+                    labelText: 'OpenAI-compatible base URL',
+                  ),
+                ),
+                const SizedBox(height: 12),
+                TextField(
+                  controller: anthropic,
+                  autocorrect: false,
+                  keyboardType: TextInputType.url,
+                  decoration: const InputDecoration(
+                    labelText: 'Anthropic-compatible base URL',
+                  ),
+                ),
+                const SizedBox(height: 12),
+                TextField(
+                  controller: defaultModel,
+                  autocorrect: false,
+                  decoration: const InputDecoration(
+                    labelText: 'Default model ID',
+                  ),
+                ),
+                const SizedBox(height: 12),
+                TextField(
+                  controller: models,
+                  minLines: 3,
+                  maxLines: 8,
+                  autocorrect: false,
+                  decoration: const InputDecoration(
+                    labelText: 'Supported model IDs (one per line)',
+                    alignLabelWithHint: true,
+                  ),
+                ),
+                const SizedBox(height: 10),
+                OutlinedButton.icon(
+                  onPressed: existing?.configured == true
+                      ? () {
+                          agent.fetchAPIProviderModels(existing!.name);
+                          Navigator.pop(dialogContext);
+                        }
+                      : null,
+                  icon: const Icon(Icons.refresh),
+                  label: const Text('Fetch models from OpenAI endpoint'),
+                ),
+              ],
+            ),
+          ),
         ),
       ),
     );
@@ -4004,54 +4006,15 @@ class _AgentPageState extends State<AgentPage> with WidgetsBindingObserver {
   }
 
   Future<void> _showDeviceLogin() async {
-    await showDialog<void>(
+    await showForgeSheet<void>(
       context: context,
       barrierDismissible: false,
       builder: (dialogContext) => ListenableBuilder(
         listenable: agent,
-        builder: (context, _) => AlertDialog(
-          title: const Text('Sign in with OpenAI'),
-          content: SizedBox(
-            width: 480,
-            child: agent.authenticated
-                ? const Text('Sign-in complete. You can continue using Forge.')
-                : agent.authUserCode.isEmpty
-                ? const Row(
-                    children: [
-                      CircularProgressIndicator(),
-                      SizedBox(width: 16),
-                      Text('Requesting a device code…'),
-                    ],
-                  )
-                : Column(
-                    mainAxisSize: MainAxisSize.min,
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      const Text('Open the OpenAI page and enter this code:'),
-                      const SizedBox(height: 16),
-                      SelectableText(
-                        agent.authUserCode,
-                        style: Theme.of(context).textTheme.headlineMedium,
-                      ),
-                      const SizedBox(height: 10),
-                      SelectableText(agent.authVerificationURI),
-                      const SizedBox(height: 12),
-                      const Text(
-                        'Forge stores the refresh token in ~/.pi-go/auth.json '
-                        'with owner-only permissions, so future sessions sign in automatically.',
-                      ),
-                    ],
-                  ),
-          ),
+        builder: (context, _) => ForgeSheet(
+          title: 'Sign in with OpenAI',
+          width: 480,
           actions: [
-            if (agent.authUserCode.isNotEmpty && !agent.authenticated)
-              FilledButton(
-                onPressed: () => launchUrl(
-                  Uri.parse(agent.authVerificationURI),
-                  mode: LaunchMode.externalApplication,
-                ),
-                child: const Text('Open OpenAI'),
-              ),
             TextButton(
               onPressed: () {
                 if (!agent.authenticated && agent.authLoginPending) {
@@ -4061,59 +4024,128 @@ class _AgentPageState extends State<AgentPage> with WidgetsBindingObserver {
               },
               child: Text(agent.authenticated ? 'Done' : 'Cancel'),
             ),
+            if (agent.authUserCode.isNotEmpty && !agent.authenticated)
+              FilledButton(
+                onPressed: () => launchUrl(
+                  Uri.parse(agent.authVerificationURI),
+                  mode: LaunchMode.externalApplication,
+                ),
+                child: const Text('Open OpenAI'),
+              ),
           ],
+          child: agent.authenticated
+              ? const Text('Sign-in complete. You can continue using Forge.')
+              : agent.authUserCode.isEmpty
+              ? const Row(
+                  children: [
+                    SizedBox.square(
+                      dimension: 22,
+                      child: CircularProgressIndicator.adaptive(strokeWidth: 2),
+                    ),
+                    SizedBox(width: 14),
+                    Expanded(child: Text('Requesting a device code…')),
+                  ],
+                )
+              : SingleChildScrollView(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Text('Open the OpenAI page and enter this code:'),
+                      const SizedBox(height: 14),
+                      Container(
+                        width: double.infinity,
+                        padding: const EdgeInsets.symmetric(vertical: 14),
+                        alignment: Alignment.center,
+                        decoration: BoxDecoration(
+                          color: Theme.of(context).colorScheme.surfaceContainer,
+                          borderRadius: BorderRadius.circular(
+                            ForgeStyle.of(context).cardRadius,
+                          ),
+                        ),
+                        child: SelectableText(
+                          agent.authUserCode,
+                          style: ForgeStyle.of(context)
+                              .mono(size: 26, height: 1.2)
+                              .copyWith(
+                                fontWeight: FontWeight.w600,
+                                letterSpacing: 2,
+                                color: Theme.of(context).colorScheme.onSurface,
+                              ),
+                        ),
+                      ),
+                      const SizedBox(height: 10),
+                      SelectableText(agent.authVerificationURI),
+                      const SizedBox(height: 12),
+                      Text(
+                        'Forge stores the refresh token in ~/.pi-go/auth.json '
+                        'with owner-only permissions, so future sessions sign in automatically.',
+                        style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                          color: Theme.of(context).colorScheme.onSurfaceVariant,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
         ),
       ),
     );
   }
 
+  /// Lists the configured models and returns the chosen ID.
+  Future<String?> _chooseModel({
+    required String title,
+    required String Function() current,
+    List<Widget> Function(BuildContext dialogContext)? extraActions,
+  }) => showForgeSheet<String>(
+    context: context,
+    builder: (dialogContext) => ListenableBuilder(
+      listenable: agent,
+      builder: (context, _) => ForgeSheet(
+        title: title,
+        width: 560,
+        padded: agent.availableModels.isEmpty,
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext),
+            child: const Text('Cancel'),
+          ),
+          ...?extraActions?.call(dialogContext),
+        ],
+        child: agent.availableModels.isEmpty
+            ? const Text('No configured models are available.')
+            : ListView(
+                shrinkWrap: true,
+                padding: const EdgeInsets.symmetric(horizontal: 12),
+                children: [
+                  for (final item in agent.availableModels)
+                    ForgeChoiceTile(
+                      title: item.label,
+                      subtitle: item.id,
+                      selected: item.id == current(),
+                      onTap: () => Navigator.pop(dialogContext, item.id),
+                    ),
+                ],
+              ),
+      ),
+    ),
+  );
+
   Future<void> _showModels() async {
     if (!agent.connected || agent.streaming) return;
     agent.refreshProviderConfiguration();
-    final selected = await showDialog<String>(
-      context: context,
-      builder: (dialogContext) => ListenableBuilder(
-        listenable: agent,
-        builder: (context, _) => AlertDialog(
-          title: const Text('Select model'),
-          content: SizedBox(
-            width: 560,
-            child: agent.availableModels.isEmpty
-                ? const Text('No configured models are available.')
-                : ListView(
-                    shrinkWrap: true,
-                    children: agent.availableModels
-                        .map(
-                          (item) => ListTile(
-                            selected: item.id == agent.currentModel,
-                            leading: Icon(
-                              item.id == agent.currentModel
-                                  ? Icons.radio_button_checked
-                                  : Icons.radio_button_unchecked,
-                            ),
-                            title: Text(item.label),
-                            subtitle: Text(item.id),
-                            onTap: () => Navigator.pop(dialogContext, item.id),
-                          ),
-                        )
-                        .toList(),
-                  ),
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(dialogContext),
-              child: const Text('Cancel'),
-            ),
-            TextButton(
-              onPressed: () {
-                Navigator.pop(dialogContext);
-                _showAccount();
-              },
-              child: const Text('Configure providers'),
-            ),
-          ],
+    final selected = await _chooseModel(
+      title: 'Select model',
+      current: () => agent.currentModel,
+      extraActions: (dialogContext) => [
+        TextButton(
+          onPressed: () {
+            Navigator.pop(dialogContext);
+            _showAccount();
+          },
+          child: const Text('Configure providers'),
         ),
-      ),
+      ],
     );
     if (selected != null && selected != agent.currentModel) {
       agent.setModel(selected);
@@ -4123,43 +4155,9 @@ class _AgentPageState extends State<AgentPage> with WidgetsBindingObserver {
   Future<void> _showClassifierModels() async {
     if (!agent.connected || agent.streaming) return;
     agent.refreshProviderConfiguration();
-    final selected = await showDialog<String>(
-      context: context,
-      builder: (dialogContext) => ListenableBuilder(
-        listenable: agent,
-        builder: (context, _) => AlertDialog(
-          title: const Text('Select safety classifier'),
-          content: SizedBox(
-            width: 560,
-            child: agent.availableModels.isEmpty
-                ? const Text('No configured models are available.')
-                : ListView(
-                    shrinkWrap: true,
-                    children: agent.availableModels
-                        .map(
-                          (item) => ListTile(
-                            selected: item.id == agent.classifierModel,
-                            leading: Icon(
-                              item.id == agent.classifierModel
-                                  ? Icons.radio_button_checked
-                                  : Icons.radio_button_unchecked,
-                            ),
-                            title: Text(item.label),
-                            subtitle: Text(item.id),
-                            onTap: () => Navigator.pop(dialogContext, item.id),
-                          ),
-                        )
-                        .toList(),
-                  ),
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(dialogContext),
-              child: const Text('Cancel'),
-            ),
-          ],
-        ),
-      ),
+    final selected = await _chooseModel(
+      title: 'Select safety classifier',
+      current: () => agent.classifierModel,
     );
     if (selected != null && selected != agent.classifierModel) {
       agent.setClassifierModel(selected);
@@ -4168,22 +4166,11 @@ class _AgentPageState extends State<AgentPage> with WidgetsBindingObserver {
 
   Future<void> _showWorkspace() async {
     final controller = TextEditingController(text: agent.currentCWD);
-    final selected = await showDialog<String>(
+    final selected = await showForgeSheet<String>(
       context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Agent working directory'),
-        content: SizedBox(
-          width: 620,
-          child: TextField(
-            controller: controller,
-            autofocus: true,
-            decoration: const InputDecoration(
-              labelText: 'Absolute directory on the agent server',
-              border: OutlineInputBorder(),
-            ),
-            onSubmitted: (value) => Navigator.pop(context, value.trim()),
-          ),
-        ),
+      builder: (context) => ForgeSheet(
+        title: 'Agent working directory',
+        icon: Icons.folder_outlined,
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context),
@@ -4194,12 +4181,35 @@ class _AgentPageState extends State<AgentPage> with WidgetsBindingObserver {
             child: const Text('Use directory'),
           ),
         ],
+        child: TextField(
+          controller: controller,
+          autofocus: true,
+          autocorrect: false,
+          style: ForgeStyle.of(context).mono(
+            size: ForgeStyle.of(context).touch ? 15 : 13,
+            color: Theme.of(context).colorScheme.onSurface,
+          ),
+          decoration: const InputDecoration(
+            labelText: 'Absolute directory on the agent server',
+          ),
+          onSubmitted: (value) => Navigator.pop(context, value.trim()),
+        ),
       ),
     );
     controller.dispose();
     if (selected != null && selected.isNotEmpty) {
       agent.setWorkingDirectory(selected);
     }
+  }
+
+  String _sessionTimestamp(DateTime? time) {
+    final localTime = time?.toLocal();
+    if (localTime == null) return 'Time unavailable';
+    return '${localTime.year.toString().padLeft(4, '0')}-'
+        '${localTime.month.toString().padLeft(2, '0')}-'
+        '${localTime.day.toString().padLeft(2, '0')}  '
+        '${localTime.hour.toString().padLeft(2, '0')}:'
+        '${localTime.minute.toString().padLeft(2, '0')}';
   }
 
   Future<void> _showSessions() async {
@@ -4210,19 +4220,42 @@ class _AgentPageState extends State<AgentPage> with WidgetsBindingObserver {
       var hasMore = page.hasMore;
       var loadingMore = false;
       if (!mounted) return;
-      final selected = await showDialog<String>(
+      final selected = await showForgeSheet<String>(
         context: context,
         builder: (dialogContext) => StatefulBuilder(
-          builder: (context, setDialogState) => AlertDialog(
-            title: const Text('Switch session'),
-            content: SizedBox(
+          builder: (context, setDialogState) {
+            final theme = Theme.of(context);
+            final style = ForgeStyle.of(context);
+            return ForgeSheet(
+              title: 'Switch session',
               width: 720,
               height: 480,
+              padded: false,
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(context),
+                  child: const Text('Cancel'),
+                ),
+                FilledButton.icon(
+                  onPressed: () => Navigator.pop(context, '__new_session__'),
+                  icon: const Icon(Icons.add),
+                  label: const Text('New session'),
+                ),
+              ],
               child: sessions.isEmpty
-                  ? const Center(child: Text('No existing sessions'))
+                  ? Center(
+                      child: Text(
+                        'No existing sessions',
+                        style: TextStyle(
+                          color: theme.colorScheme.onSurfaceVariant,
+                        ),
+                      ),
+                    )
                   : ListView.separated(
+                      padding: const EdgeInsets.symmetric(horizontal: 12),
                       itemCount: sessions.length + (hasMore ? 1 : 0),
-                      separatorBuilder: (_, _) => const Divider(height: 1),
+                      separatorBuilder: (_, _) =>
+                          const Divider(height: 1, indent: 16, endIndent: 16),
                       itemBuilder: (context, index) {
                         if (index == sessions.length) {
                           return Padding(
@@ -4265,9 +4298,10 @@ class _AgentPageState extends State<AgentPage> with WidgetsBindingObserver {
                                 icon: loadingMore
                                     ? const SizedBox.square(
                                         dimension: 16,
-                                        child: CircularProgressIndicator(
-                                          strokeWidth: 2,
-                                        ),
+                                        child:
+                                            CircularProgressIndicator.adaptive(
+                                              strokeWidth: 2,
+                                            ),
                                       )
                                     : const Icon(Icons.expand_more),
                                 label: Text(
@@ -4280,15 +4314,9 @@ class _AgentPageState extends State<AgentPage> with WidgetsBindingObserver {
                           );
                         }
                         final session = sessions[index];
-                        final localTime = session.lastMessageTime?.toLocal();
-                        final timestamp = localTime == null
-                            ? 'Time unavailable'
-                            : '${localTime.year.toString().padLeft(4, '0')}-'
-                                  '${localTime.month.toString().padLeft(2, '0')}-'
-                                  '${localTime.day.toString().padLeft(2, '0')}  '
-                                  '${localTime.hour.toString().padLeft(2, '0')}:'
-                                  '${localTime.minute.toString().padLeft(2, '0')}';
+                        final current = session.id == agent.currentSession;
                         return ListTile(
+                          selected: current,
                           title: Row(
                             children: [
                               if (session.active || session.waitingInput) ...[
@@ -4298,44 +4326,53 @@ class _AgentPageState extends State<AgentPage> with WidgetsBindingObserver {
                                         ? 'waiting-session-${session.id}'
                                         : 'active-session-${session.id}',
                                   ),
-                                  width: 9,
-                                  height: 9,
+                                  width: 8,
+                                  height: 8,
                                   decoration: BoxDecoration(
                                     color: session.waitingInput
-                                        ? Colors.amber
-                                        : Colors.green,
+                                        ? style.warningColor
+                                        : style.successColor,
                                     shape: BoxShape.circle,
                                   ),
                                 ),
                                 const SizedBox(width: 8),
                               ],
-                              Expanded(child: Text(timestamp)),
+                              Expanded(
+                                child: Text(
+                                  _sessionTimestamp(session.lastMessageTime),
+                                  style: theme.textTheme.labelMedium?.copyWith(
+                                    color: current
+                                        ? theme.colorScheme.primary
+                                        : theme.colorScheme.onSurfaceVariant,
+                                    fontFeatures: const [
+                                      ui.FontFeature.tabularFigures(),
+                                    ],
+                                  ),
+                                ),
+                              ),
                             ],
                           ),
-                          subtitle: Text(
-                            session.summary.isEmpty
-                                ? 'No completed turn summary yet.'
-                                : session.summary,
-                            maxLines: 2,
-                            overflow: TextOverflow.ellipsis,
+                          subtitle: Padding(
+                            padding: const EdgeInsets.only(top: 3),
+                            child: Text(
+                              session.summary.isEmpty
+                                  ? 'No completed turn summary yet.'
+                                  : session.summary,
+                              maxLines: 2,
+                              overflow: TextOverflow.ellipsis,
+                              style: theme.textTheme.bodyMedium?.copyWith(
+                                color: session.summary.isEmpty
+                                    ? theme.colorScheme.onSurfaceVariant
+                                    : theme.colorScheme.onSurface,
+                              ),
+                            ),
                           ),
                           onTap: () => Navigator.pop(context, session.id),
                         );
                       },
                     ),
-            ),
-            actions: [
-              FilledButton.icon(
-                onPressed: () => Navigator.pop(context, '__new_session__'),
-                icon: const Icon(Icons.add),
-                label: const Text('New session'),
-              ),
-              TextButton(
-                onPressed: () => Navigator.pop(context),
-                child: const Text('Cancel'),
-              ),
-            ],
-          ),
+            );
+          },
         ),
       );
       if (selected == '__new_session__') {
@@ -4660,6 +4697,7 @@ class _AgentPageState extends State<AgentPage> with WidgetsBindingObserver {
 
   @override
   Widget build(BuildContext context) {
+    final style = ForgeStyle.of(context);
     return Scaffold(
       body: SafeArea(
         child: AdaptiveBrowserWorkspace(
@@ -4669,39 +4707,48 @@ class _AgentPageState extends State<AgentPage> with WidgetsBindingObserver {
               _connectionBar(),
               const Divider(height: 1),
               Expanded(
-                child: Stack(
-                  children: [
-                    if (agent.messages.isEmpty)
-                      const Center(
-                        child: Text(
-                          'Connect to pi-go-agent and start a conversation.',
+                child: LayoutBuilder(
+                  builder: (context, constraints) {
+                    // Keep the transcript a readable column in a wide window
+                    // while the scrollbar stays at the window edge.
+                    final gutter = math.max(
+                      style.touch ? 14.0 : 20.0,
+                      (constraints.maxWidth - forgeContentWidth) / 2,
+                    );
+                    return Stack(
+                      children: [
+                        if (agent.messages.isEmpty) _emptyTranscript(),
+                        NotificationListener<ScrollNotification>(
+                          onNotification: _handleTranscriptScroll,
+                          child: ListView.builder(
+                            controller: scroll,
+                            padding: EdgeInsets.fromLTRB(
+                              gutter,
+                              18,
+                              gutter,
+                              12,
+                            ),
+                            itemCount: agent.messages.length,
+                            itemBuilder: (_, index) =>
+                                _message(agent.messages[index]),
+                          ),
                         ),
-                      ),
-                    NotificationListener<ScrollNotification>(
-                      onNotification: _handleTranscriptScroll,
-                      child: ListView.builder(
-                        controller: scroll,
-                        padding: const EdgeInsets.all(20),
-                        itemCount: agent.messages.length,
-                        itemBuilder: (_, index) =>
-                            _message(agent.messages[index]),
-                      ),
-                    ),
-                    if (_showScrollToBottom)
-                      Positioned(
-                        right: 16,
-                        bottom: 16,
-                        child: FloatingActionButton.small(
-                          heroTag: 'scroll-to-transcript-bottom',
-                          tooltip: 'Scroll to bottom',
-                          onPressed: _scrollToBottom,
-                          child: const Icon(Icons.keyboard_double_arrow_down),
-                        ),
-                      ),
-                  ],
+                        if (_showScrollToBottom)
+                          Positioned(
+                            right: math.max(16, gutter - 56),
+                            bottom: 12,
+                            child: FloatingActionButton.small(
+                              heroTag: 'scroll-to-transcript-bottom',
+                              tooltip: 'Scroll to bottom',
+                              onPressed: _scrollToBottom,
+                              child: const Icon(Icons.arrow_downward),
+                            ),
+                          ),
+                      ],
+                    );
+                  },
                 ),
               ),
-              const Divider(height: 1),
               _composer(),
             ],
           ),
@@ -4766,28 +4813,18 @@ class _AgentPageState extends State<AgentPage> with WidgetsBindingObserver {
 
   Future<bool> _confirmPushRevocation(String description) async {
     if (!mounted) return false;
-    return await showDialog<bool>(
+    return await showForgeAlert<bool>(
           context: context,
-          builder: (context) => AlertDialog(
-            title: const Text('Revoke push authorization?'),
-            content: Text(
+          title: 'Revoke push authorization?',
+          content: [
+            Text(
               '$description will stop receiving encrypted notifications until it is paired again.',
             ),
-            actions: [
-              TextButton(
-                onPressed: () => Navigator.pop(context, false),
-                child: const Text('Cancel'),
-              ),
-              FilledButton(
-                onPressed: () => Navigator.pop(context, true),
-                style: FilledButton.styleFrom(
-                  backgroundColor: Theme.of(context).colorScheme.error,
-                  foregroundColor: Theme.of(context).colorScheme.onError,
-                ),
-                child: const Text('Revoke'),
-              ),
-            ],
-          ),
+          ],
+          actions: const [
+            ForgeAlertAction('Cancel', false),
+            ForgeAlertAction('Revoke', true, destructive: true),
+          ],
         ) ==
         true;
   }
@@ -4823,13 +4860,20 @@ class _AgentPageState extends State<AgentPage> with WidgetsBindingObserver {
       return fingerprint.isEmpty ? prefix : '$prefix\n$fingerprint';
     }
 
-    await showDialog<void>(
+    await showForgeSheet<void>(
       context: context,
       builder: (context) => StatefulBuilder(
-        builder: (context, setDialogState) => AlertDialog(
-          title: const Text('Push authorization links'),
-          content: ConstrainedBox(
-            constraints: const BoxConstraints(maxWidth: 680, maxHeight: 620),
+        builder: (context, setDialogState) => ForgeSheet(
+          title: 'Push authorization links',
+          width: 680,
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('Done'),
+            ),
+          ],
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxHeight: 620),
             child: SingleChildScrollView(
               child: Column(
                 mainAxisSize: MainAxisSize.min,
@@ -4975,118 +5019,183 @@ class _AgentPageState extends State<AgentPage> with WidgetsBindingObserver {
               ),
             ),
           ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(context),
-              child: const Text('Done'),
-            ),
-          ],
         ),
       ),
     );
   }
 
+  PopupMenuItem<void> _controlsItem({
+    required IconData icon,
+    required Widget label,
+    required VoidCallback onTap,
+    bool enabled = true,
+  }) => PopupMenuItem<void>(
+    enabled: enabled,
+    onTap: onTap,
+    height: ForgeStyle.of(context).touch ? 46 : 34,
+    child: Row(
+      children: [
+        Icon(icon, size: 18),
+        const SizedBox(width: 10),
+        Expanded(child: label),
+      ],
+    ),
+  );
+
   Widget _controlsPopup() => SizedBox.square(
-    dimension: 40,
+    dimension: ForgeStyle.of(context).controlHeight,
     child: PopupMenuButton<void>(
       padding: EdgeInsets.zero,
       constraints: const BoxConstraints(minWidth: 280, maxWidth: 360),
       tooltip: 'Model, thinking, and providers',
+      iconSize: ForgeStyle.of(context).toolbarIconSize,
+      iconColor: Theme.of(context).colorScheme.onSurfaceVariant,
+      position: PopupMenuPosition.under,
       icon: const Icon(Icons.tune),
       itemBuilder: (_) => [
-        if (deviceIdentityExportSupported)
-          PopupMenuItem(
-            onTap: _copyDeviceAuthorizationEntry,
-            child: const Row(
-              children: [
-                Icon(Icons.key_outlined, size: 18),
-                SizedBox(width: 8),
-                Expanded(
-                  child: Text(
-                    'Copy device whitelist entry',
-                    overflow: TextOverflow.ellipsis,
-                  ),
-                ),
-              ],
-            ),
+        _controlsItem(
+          enabled: agent.connected && !agent.streaming,
+          onTap: _showModels,
+          icon: Icons.smart_toy_outlined,
+          label: Text(model, overflow: TextOverflow.ellipsis),
+        ),
+        _controlsItem(
+          enabled: agent.connected && !agent.streaming,
+          onTap: _showClassifierModels,
+          icon: Icons.shield_outlined,
+          label: Text(
+            'classifier: ${agent.classifierModel}',
+            overflow: TextOverflow.ellipsis,
           ),
+        ),
+        _controlsItem(
+          enabled: agent.connected && !agent.streaming,
+          onTap: _showThinkingLevels,
+          icon: Icons.psychology_outlined,
+          label: Text('thinking: $thinking'),
+        ),
+        _controlsItem(
+          enabled: agent.connected,
+          onTap: _showAccount,
+          icon: agent.authenticated
+              ? Icons.account_circle
+              : Icons.manage_accounts_outlined,
+          label: const Text('Providers'),
+        ),
+        if (pushSupported || deviceIdentityExportSupported)
+          const PopupMenuDivider(height: 9),
         if (pushSupported)
-          PopupMenuItem(
+          _controlsItem(
             enabled:
                 agent.connected &&
                 _pushRelay?.identity != null &&
                 !agent.streaming,
             onTap: _showPushAuthorizations,
-            child: const Row(
-              children: [
-                Icon(Icons.notifications_active_outlined, size: 18),
-                SizedBox(width: 8),
-                Expanded(
-                  child: Text(
-                    'Push authorization links',
-                    overflow: TextOverflow.ellipsis,
-                  ),
-                ),
-              ],
+            icon: Icons.notifications_active_outlined,
+            label: const Text(
+              'Push authorization links',
+              overflow: TextOverflow.ellipsis,
             ),
           ),
-        PopupMenuItem(
-          enabled: agent.connected && !agent.streaming,
-          onTap: _showModels,
-          child: Row(
-            children: [
-              const Icon(Icons.smart_toy_outlined, size: 18),
-              const SizedBox(width: 8),
-              Flexible(child: Text(model)),
-            ],
+        if (deviceIdentityExportSupported)
+          _controlsItem(
+            onTap: _copyDeviceAuthorizationEntry,
+            icon: Icons.key_outlined,
+            label: const Text(
+              'Copy device whitelist entry',
+              overflow: TextOverflow.ellipsis,
+            ),
           ),
-        ),
-        PopupMenuItem(
-          enabled: agent.connected && !agent.streaming,
-          onTap: _showClassifierModels,
-          child: Row(
-            children: [
-              const Icon(Icons.shield_outlined, size: 18),
-              const SizedBox(width: 8),
-              Flexible(
-                child: Text(
-                  'classifier: ${agent.classifierModel}',
-                  overflow: TextOverflow.ellipsis,
-                ),
-              ),
-            ],
-          ),
-        ),
-        PopupMenuItem(
-          enabled: agent.connected && !agent.streaming,
-          onTap: _showThinkingLevels,
-          child: Row(
-            children: [
-              const Icon(Icons.psychology_outlined, size: 18),
-              const SizedBox(width: 8),
-              Text('thinking: $thinking'),
-            ],
-          ),
-        ),
-        PopupMenuItem(
-          enabled: agent.connected,
-          onTap: _showAccount,
-          child: Row(
-            children: [
-              Icon(
-                agent.authenticated
-                    ? Icons.account_circle
-                    : Icons.manage_accounts_outlined,
-                size: 18,
-              ),
-              const SizedBox(width: 8),
-              const Text('Providers'),
-            ],
-          ),
-        ),
       ],
     ),
   );
+
+  /// Connection state as a coloured dot followed by the agent's status text.
+  Widget _statusLine() {
+    final theme = Theme.of(context);
+    final style = ForgeStyle.of(context);
+    final color = agent.pendingApproval != null
+        ? style.warningColor
+        : agent.connected
+        ? style.successColor
+        : theme.colorScheme.outline;
+    return Row(
+      children: [
+        Container(
+          width: 7,
+          height: 7,
+          decoration: BoxDecoration(color: color, shape: BoxShape.circle),
+        ),
+        const SizedBox(width: 7),
+        Expanded(
+          child: Text(
+            agent.status,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: theme.textTheme.bodySmall?.copyWith(
+              color: agent.connected
+                  ? theme.colorScheme.onSurface
+                  : theme.colorScheme.onSurfaceVariant,
+              fontWeight: FontWeight.w500,
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
+  /// Token counters of the session and how full the context window is.
+  Widget _usageStats() {
+    final theme = Theme.of(context);
+    final style = ForgeStyle.of(context);
+    final window = agent.contextWindow;
+    final used = window <= 0
+        ? 0.0
+        : (agent.contextUsed / window).clamp(0.0, 1.0);
+    final meterColor = used > .95
+        ? theme.colorScheme.error
+        : used > .8
+        ? style.warningColor
+        : theme.colorScheme.primary;
+    return DefaultTextStyle.merge(
+      style: theme.textTheme.labelSmall?.copyWith(
+        color: theme.colorScheme.onSurfaceVariant,
+        fontWeight: FontWeight.w400,
+        fontFeatures: const [ui.FontFeature.tabularFigures()],
+      ),
+      child: Wrap(
+        spacing: 12,
+        runSpacing: 2,
+        crossAxisAlignment: WrapCrossAlignment.center,
+        children: [
+          Text('session ${agent.total}'),
+          Text('in ${agent.input}'),
+          Text('cache ${agent.cacheRead}'),
+          Text('out ${agent.output}'),
+          Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text('context ${agent.contextUsed}/${agent.contextWindow}'),
+              const SizedBox(width: 6),
+              SizedBox(
+                width: 36,
+                child: ClipRRect(
+                  borderRadius: BorderRadius.circular(2),
+                  child: LinearProgressIndicator(
+                    value: used,
+                    minHeight: 3,
+                    color: meterColor,
+                    backgroundColor: theme.colorScheme.outlineVariant,
+                  ),
+                ),
+              ),
+            ],
+          ),
+          Text('upstream ${agent.upstreamTransport}'),
+        ],
+      ),
+    );
+  }
 
   Widget _collapsedConnectionBar() => Material(
     color: Colors.transparent,
@@ -5094,20 +5203,16 @@ class _AgentPageState extends State<AgentPage> with WidgetsBindingObserver {
       key: const ValueKey('collapsed-header-status'),
       onTap: () => setState(() => _headerExpanded = true),
       child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 9),
-        child: Align(
-          alignment: Alignment.centerLeft,
-          child: Text(
-            agent.status,
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-            style: TextStyle(
-              color: agent.connected
-                  ? Theme.of(context).colorScheme.primary
-                  : Theme.of(context).colorScheme.onSurfaceVariant,
-              fontWeight: FontWeight.w600,
+        padding: const EdgeInsets.fromLTRB(16, 9, 10, 9),
+        child: Row(
+          children: [
+            Expanded(child: _statusLine()),
+            Icon(
+              Icons.expand_more,
+              size: 18,
+              color: Theme.of(context).colorScheme.onSurfaceVariant,
             ),
-          ),
+          ],
         ),
       ),
     ),
@@ -5122,311 +5227,272 @@ class _AgentPageState extends State<AgentPage> with WidgetsBindingObserver {
         : _collapsedConnectionBar(),
   );
 
-  Widget _expandedConnectionBar() => Padding(
-    padding: const EdgeInsets.fromLTRB(16, 10, 16, 10),
-    child: Column(
-      children: [
-        LayoutBuilder(
-          builder: (context, constraints) {
-            final compact = constraints.maxWidth < 720;
-            final headerChildren = <Widget>[
-              const Text(
-                'Pi Go',
-                style: TextStyle(fontSize: 20, fontWeight: FontWeight.w700),
-              ),
-              SizedBox(width: compact ? 2 : 10),
-              _controlsPopup(),
-              const Spacer(),
-              if (compact)
-                IconButton(
-                  padding: EdgeInsets.zero,
-                  constraints: const BoxConstraints.tightFor(
-                    width: 40,
-                    height: 40,
-                  ),
-                  tooltip: agent.yolo
-                      ? 'YOLO enabled: bypassing classifier safety gate'
-                      : 'Enable YOLO mode and bypass classifier safety gate',
-                  onPressed: agent.connected && !agent.streaming
-                      ? () => agent.setYOLO(!agent.yolo)
-                      : null,
-                  style: agent.yolo
-                      ? IconButton.styleFrom(
-                          backgroundColor: Theme.of(
-                            context,
-                          ).colorScheme.errorContainer,
-                          foregroundColor: Theme.of(
-                            context,
-                          ).colorScheme.onErrorContainer,
-                        )
-                      : IconButton.styleFrom(
-                          side: BorderSide(
-                            color: Theme.of(context).colorScheme.outline,
-                          ),
-                        ),
-                  icon: const Icon(Icons.rocket_launch_outlined),
-                )
-              else
-                agent.yolo
-                    ? FilledButton.icon(
-                        onPressed: agent.connected && !agent.streaming
-                            ? () => agent.setYOLO(false)
-                            : null,
-                        style: FilledButton.styleFrom(
-                          backgroundColor: Theme.of(
-                            context,
-                          ).colorScheme.errorContainer,
-                          foregroundColor: Theme.of(
-                            context,
-                          ).colorScheme.onErrorContainer,
-                        ),
-                        icon: const Icon(Icons.rocket_launch_outlined),
-                        label: const Text('YOLO'),
-                      )
-                    : OutlinedButton.icon(
-                        onPressed: agent.connected && !agent.streaming
-                            ? () => agent.setYOLO(true)
-                            : null,
-                        icon: const Icon(Icons.rocket_launch_outlined),
-                        label: const Text('YOLO'),
-                      ),
-              SizedBox(width: compact ? 2 : 6),
-              if (compact)
-                IconButton.outlined(
-                  padding: EdgeInsets.zero,
-                  constraints: const BoxConstraints.tightFor(
-                    width: 40,
-                    height: 40,
-                  ),
-                  tooltip: 'Switch session',
-                  onPressed: agent.connected ? _showSessions : null,
-                  icon: const Icon(Icons.account_tree_outlined),
-                )
-              else
-                OutlinedButton.icon(
-                  onPressed: agent.connected ? _showSessions : null,
-                  icon: const Icon(Icons.account_tree_outlined),
-                  label: const Text('Sessions  Ctrl-B S'),
-                ),
-              SizedBox(width: compact ? 2 : 6),
-              if (!compact) ...[
-                IconButton.outlined(
-                  tooltip: agent.authenticated
-                      ? 'Providers · OpenAI signed in'
-                      : 'Configure providers',
-                  onPressed: agent.connected ? _showAccount : null,
-                  icon: Icon(
-                    agent.authenticated ? Icons.account_circle : Icons.login,
-                  ),
-                ),
-                const SizedBox(width: 6),
-              ],
-              IconButton.outlined(
-                padding: compact ? EdgeInsets.zero : null,
-                constraints: compact
-                    ? const BoxConstraints.tightFor(width: 40, height: 40)
-                    : null,
-                tooltip: agent.currentCWD.isEmpty
-                    ? 'Set agent working directory'
-                    : 'Workspace: ${agent.currentCWD}',
-                onPressed: agent.connected && !agent.streaming
-                    ? _showWorkspace
-                    : null,
-                icon: const Icon(Icons.folder_outlined),
-              ),
-              SizedBox(width: compact ? 2 : 6),
-              _connectionManagerButton(compact),
-            ];
-            return Column(
-              children: [
-                Row(children: headerChildren),
-                const SizedBox(height: 4),
-                Align(
-                  alignment: Alignment.centerLeft,
-                  child: Text(
-                    agent.status,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: TextStyle(
-                      color: agent.connected
-                          ? Theme.of(context).colorScheme.primary
-                          : Theme.of(context).colorScheme.onSurfaceVariant,
-                    ),
-                  ),
-                ),
-                Align(
-                  alignment: Alignment.centerLeft,
-                  child: Wrap(
-                    spacing: 12,
-                    runSpacing: 2,
-                    children:
-                        [
-                              Text('session ${agent.total}'),
-                              Text('in ${agent.input}'),
-                              Text('cache ${agent.cacheRead}'),
-                              Text('out ${agent.output}'),
-                              Text(
-                                'context ${agent.contextUsed}/${agent.contextWindow}',
-                              ),
-                              Text('upstream ${agent.upstreamTransport}'),
-                            ]
-                            .map(
-                              (item) => DefaultTextStyle.merge(
-                                style: Theme.of(context).textTheme.bodySmall
-                                    ?.copyWith(
-                                      color: Theme.of(
-                                        context,
-                                      ).colorScheme.onSurfaceVariant,
-                                    ),
-                                child: item,
-                              ),
-                            )
-                            .toList(),
-                  ),
-                ),
-              ],
-            );
-          },
-        ),
-        if (!agent.connected || showConnectionSettings) ...[
-          const SizedBox(height: 8),
-          SingleChildScrollView(
-            scrollDirection: Axis.horizontal,
-            child: SegmentedButton<ConnectionKind>(
-              segments: [
-                if (_showLocalAgentOption)
-                  const ButtonSegment(
-                    value: ConnectionKind.local,
-                    label: Text('Local'),
-                  ),
-                if (!flatpakFrontend)
-                  ButtonSegment(
-                    value: ConnectionKind.unix,
-                    label: const Text('Unix'),
-                    enabled: nativeSocketsSupported && !webSocketOnlyClient,
-                  ),
-                if (!flatpakFrontend)
-                  ButtonSegment(
-                    value: ConnectionKind.tcp,
-                    label: const Text('TCP'),
-                    enabled: nativeSocketsSupported && !webSocketOnlyClient,
-                  ),
-                const ButtonSegment(
-                  value: ConnectionKind.websocket,
-                  label: Text('WebSocket'),
-                ),
-              ],
-              selected: {connectionKind},
-              onSelectionChanged: agent.connected
-                  ? null
-                  : (value) {
-                      setState(() {
-                        connectionKind = value.first;
-                        address.text = _defaultAddress(connectionKind);
-                        connections[activeConnectionIndex].kind =
-                            connectionKind;
-                        connections[activeConnectionIndex].address =
-                            address.text;
-                      });
-                    },
+  Widget _yoloButton(bool compact) {
+    final scheme = Theme.of(context).colorScheme;
+    final enabled = agent.connected && !agent.streaming;
+    if (compact) {
+      return _toolbarIconButton(
+        tooltip: agent.yolo
+            ? 'YOLO enabled: bypassing classifier safety gate'
+            : 'Enable YOLO mode and bypass classifier safety gate',
+        onPressed: enabled ? () => agent.setYOLO(!agent.yolo) : null,
+        background: agent.yolo ? scheme.errorContainer : null,
+        foreground: agent.yolo ? scheme.onErrorContainer : null,
+        icon: Icons.rocket_launch_outlined,
+      );
+    }
+    return agent.yolo
+        ? FilledButton.icon(
+            onPressed: enabled ? () => agent.setYOLO(false) : null,
+            style: FilledButton.styleFrom(
+              backgroundColor: scheme.errorContainer,
+              foregroundColor: scheme.onErrorContainer,
             ),
+            icon: const Icon(Icons.rocket_launch_outlined),
+            label: const Text('YOLO'),
+          )
+        : OutlinedButton.icon(
+            onPressed: enabled ? () => agent.setYOLO(true) : null,
+            icon: const Icon(Icons.rocket_launch_outlined),
+            label: const Text('YOLO'),
+          );
+  }
+
+  Widget _expandedConnectionBar() => Padding(
+    padding: const EdgeInsets.fromLTRB(16, 8, 12, 10),
+    child: LayoutBuilder(
+      builder: (context, constraints) {
+        final theme = Theme.of(context);
+        // Labelled buttons need more room than the shared breakpoint gives.
+        final compact = constraints.maxWidth < 820;
+        final gap = SizedBox(width: compact ? 2 : 8);
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Text(
+                  'Pi Go',
+                  style: theme.textTheme.titleLarge?.copyWith(
+                    fontWeight: FontWeight.w700,
+                    letterSpacing: -.3,
+                  ),
+                ),
+                SizedBox(width: compact ? 2 : 6),
+                _controlsPopup(),
+                const Spacer(),
+                _yoloButton(compact),
+                gap,
+                if (compact)
+                  _toolbarIconButton(
+                    tooltip: 'Switch session',
+                    onPressed: agent.connected ? _showSessions : null,
+                    icon: Icons.account_tree_outlined,
+                  )
+                else
+                  OutlinedButton.icon(
+                    onPressed: agent.connected ? _showSessions : null,
+                    icon: const Icon(Icons.account_tree_outlined),
+                    label: const Text('Sessions  Ctrl-B S'),
+                  ),
+                gap,
+                if (!compact) ...[
+                  _toolbarIconButton(
+                    tooltip: agent.authenticated
+                        ? 'Providers · OpenAI signed in'
+                        : 'Configure providers',
+                    onPressed: agent.connected ? _showAccount : null,
+                    icon: agent.authenticated
+                        ? Icons.account_circle
+                        : Icons.login,
+                  ),
+                  gap,
+                ],
+                _toolbarIconButton(
+                  tooltip: agent.currentCWD.isEmpty
+                      ? 'Set agent working directory'
+                      : 'Workspace: ${agent.currentCWD}',
+                  onPressed: agent.connected && !agent.streaming
+                      ? _showWorkspace
+                      : null,
+                  icon: Icons.folder_outlined,
+                ),
+                gap,
+                _connectionManagerButton(compact),
+              ],
+            ),
+            const SizedBox(height: 6),
+            // A window has room for status and usage on one line.
+            if (constraints.maxWidth >= 1000)
+              Row(
+                children: [
+                  Expanded(child: _statusLine()),
+                  const SizedBox(width: 16),
+                  _usageStats(),
+                ],
+              )
+            else ...[
+              _statusLine(),
+              const SizedBox(height: 4),
+              _usageStats(),
+            ],
+            if (!agent.connected || showConnectionSettings) ...[
+              const SizedBox(height: 12),
+              _connectionSettings(compact),
+            ],
+          ],
+        );
+      },
+    ),
+  );
+
+  Widget _connectionSettings(bool compact) {
+    final theme = Theme.of(context);
+    final trusted = _trustedEndpoints;
+    final segments = [
+      if (_showLocalAgentOption)
+        const ButtonSegment(value: ConnectionKind.local, label: Text('Local')),
+      if (!flatpakFrontend)
+        ButtonSegment(
+          value: ConnectionKind.unix,
+          label: const Text('Unix'),
+          enabled: nativeSocketsSupported && !webSocketOnlyClient,
+        ),
+      if (!flatpakFrontend)
+        ButtonSegment(
+          value: ConnectionKind.tcp,
+          label: const Text('TCP'),
+          enabled: nativeSocketsSupported && !webSocketOnlyClient,
+        ),
+      const ButtonSegment(
+        value: ConnectionKind.websocket,
+        label: Text('WebSocket'),
+      ),
+    ];
+    Widget kinds({required bool expand}) => SegmentedButton<ConnectionKind>(
+      showSelectedIcon: false,
+      expandedInsets: expand ? EdgeInsets.zero : null,
+      segments: segments,
+      selected: {connectionKind},
+      onSelectionChanged: agent.connected
+          ? null
+          : (value) {
+              setState(() {
+                connectionKind = value.first;
+                address.text = _defaultAddress(connectionKind);
+                connections[activeConnectionIndex].kind = connectionKind;
+                connections[activeConnectionIndex].address = address.text;
+              });
+            },
+    );
+    final endpoint = TextField(
+      controller: address,
+      enabled: !agent.connected && connectionKind != ConnectionKind.local,
+      autocorrect: false,
+      keyboardType: TextInputType.url,
+      decoration: InputDecoration(
+        isDense: true,
+        labelText: connectionKind == ConnectionKind.local
+            ? 'Local workspace'
+            : 'Agent server address',
+        suffixIcon:
+            !agent.connected &&
+                connectionKind == ConnectionKind.websocket &&
+                trusted.isNotEmpty
+            ? PopupMenuButton<String>(
+                tooltip: 'Select trusted server',
+                icon: const Icon(Icons.arrow_drop_down),
+                onSelected: _selectTrustedEndpoint,
+                itemBuilder: (context) => [
+                  for (final endpoint in trusted)
+                    PopupMenuItem<String>(
+                      value: endpoint,
+                      child: Row(
+                        children: [
+                          const Icon(Icons.verified_user_outlined, size: 18),
+                          const SizedBox(width: 8),
+                          Flexible(
+                            child: Text(
+                              endpoint,
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                ],
+              )
+            : null,
+      ),
+    );
+    final connect = FilledButton(
+      onPressed: agent.connected ? _disconnectActive : _connectSelected,
+      child: Text(agent.connected ? 'Disconnect' : 'Connect'),
+    );
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        if (compact) ...[
+          LayoutBuilder(
+            builder: (context, constraints) =>
+                constraints.maxWidth >= segments.length * 96
+                ? kinds(expand: true)
+                : SingleChildScrollView(
+                    scrollDirection: Axis.horizontal,
+                    child: kinds(expand: false),
+                  ),
           ),
-          const SizedBox(height: 8),
+          const SizedBox(height: 10),
           Row(
             children: [
-              Expanded(
-                child: Builder(
-                  builder: (context) {
-                    final trusted = _trustedEndpoints;
-                    return TextField(
-                      controller: address,
-                      enabled:
-                          !agent.connected &&
-                          connectionKind != ConnectionKind.local,
-                      decoration: InputDecoration(
-                        isDense: true,
-                        labelText: connectionKind == ConnectionKind.local
-                            ? 'Local workspace'
-                            : 'Agent server address',
-                        helperText: trusted.isNotEmpty && !agent.connected
-                            ? 'Select a trusted server or enter another URL'
-                            : null,
-                        border: const OutlineInputBorder(),
-                        suffixIcon:
-                            !agent.connected &&
-                                connectionKind == ConnectionKind.websocket &&
-                                trusted.isNotEmpty
-                            ? PopupMenuButton<String>(
-                                tooltip: 'Select trusted server',
-                                icon: const Icon(Icons.arrow_drop_down),
-                                onSelected: _selectTrustedEndpoint,
-                                itemBuilder: (context) => [
-                                  for (final endpoint in trusted)
-                                    PopupMenuItem<String>(
-                                      value: endpoint,
-                                      child: Row(
-                                        children: [
-                                          const Icon(
-                                            Icons.verified_user_outlined,
-                                            size: 18,
-                                          ),
-                                          const SizedBox(width: 8),
-                                          Flexible(
-                                            child: Text(
-                                              endpoint,
-                                              overflow: TextOverflow.ellipsis,
-                                            ),
-                                          ),
-                                        ],
-                                      ),
-                                    ),
-                                ],
-                              )
-                            : null,
-                      ),
-                    );
-                  },
-                ),
-              ),
+              Expanded(child: endpoint),
               const SizedBox(width: 10),
-              FilledButton(
-                onPressed: agent.connected
-                    ? _disconnectActive
-                    : _connectSelected,
-                child: Text(agent.connected ? 'Disconnect' : 'Connect'),
-              ),
+              connect,
             ],
+          ),
+        ] else
+          Row(
+            children: [
+              kinds(expand: false),
+              const SizedBox(width: 12),
+              Expanded(child: endpoint),
+              const SizedBox(width: 10),
+              connect,
+            ],
+          ),
+        if (trusted.isNotEmpty && !agent.connected) ...[
+          const SizedBox(height: 6),
+          Text(
+            'Select a trusted server or enter another URL',
+            style: theme.textTheme.bodySmall?.copyWith(
+              color: theme.colorScheme.onSurfaceVariant,
+            ),
           ),
         ],
       ],
-    ),
-  );
+    );
+  }
 
   Widget _safetyBanner(TranscriptItem item) {
     final status = item.safetyStatus;
     final scheme = Theme.of(context).colorScheme;
+    final style = ForgeStyle.of(context);
     final (color, icon) = switch (status) {
-      'approved' => (
-        Theme.of(context).brightness == Brightness.dark
-            ? Colors.greenAccent.shade400
-            : Colors.green.shade700,
-        Icons.check_circle_outline,
-      ),
+      'approved' => (style.successColor, Icons.check_circle_outline),
       'rejected' => (scheme.error, Icons.gpp_bad_outlined),
       _ => (scheme.onSurfaceVariant, Icons.hourglass_top_outlined),
     };
     return Container(
       margin: const EdgeInsets.only(top: 8),
-      padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 7),
+      padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 6),
       decoration: BoxDecoration(
-        color: color.withValues(alpha: .12),
-        borderRadius: BorderRadius.circular(7),
-        border: Border.all(color: color.withValues(alpha: .45)),
+        color: color.withValues(alpha: .10),
+        borderRadius: BorderRadius.circular(style.codeRadius),
       ),
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Icon(icon, size: 17, color: color),
+          Icon(icon, size: 16, color: color),
           const SizedBox(width: 7),
           Expanded(
             child: Text(
@@ -5446,24 +5512,33 @@ class _AgentPageState extends State<AgentPage> with WidgetsBindingObserver {
 
   Widget _sourcePreviewHeader(String path, String language, IconData icon) {
     final filename = path.replaceAll('\\', '/').split('/').last;
+    final theme = Theme.of(context);
+    final style = ForgeStyle.of(context);
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         Row(
           children: [
-            Icon(icon, size: 17),
+            Icon(icon, size: 16, color: theme.colorScheme.onSurfaceVariant),
             const SizedBox(width: 7),
             Expanded(
               child: SelectableText(
                 filename.isEmpty ? path : filename,
-                style: const TextStyle(fontWeight: FontWeight.w700),
+                style: theme.textTheme.titleSmall,
               ),
             ),
             if (language != 'text')
-              Text(
-                language,
-                style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                  color: Theme.of(context).colorScheme.onSurfaceVariant,
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
+                decoration: BoxDecoration(
+                  color: theme.colorScheme.surfaceContainerHigh,
+                  borderRadius: BorderRadius.circular(5),
+                ),
+                child: Text(
+                  language,
+                  style: theme.textTheme.labelSmall?.copyWith(
+                    color: theme.colorScheme.onSurfaceVariant,
+                  ),
                 ),
               ),
           ],
@@ -5472,9 +5547,9 @@ class _AgentPageState extends State<AgentPage> with WidgetsBindingObserver {
           const SizedBox(height: 3),
           SelectableText(
             path,
-            style: Theme.of(context).textTheme.bodySmall?.copyWith(
-              color: Theme.of(context).colorScheme.onSurfaceVariant,
-              fontFamily: 'monospace',
+            style: style.mono(
+              size: 12,
+              color: theme.colorScheme.onSurfaceVariant,
             ),
           ),
         ],
@@ -5494,14 +5569,11 @@ class _AgentPageState extends State<AgentPage> with WidgetsBindingObserver {
         line.toString().padLeft(gutterWidth),
     ].join('\n');
     final language = _sourceLanguageForPath(path);
-    final dark = Theme.of(context).brightness == Brightness.dark;
-    final syntaxTheme = dark ? atomOneDarkReasonableTheme : atomOneLightTheme;
-    final codeStyle = TextStyle(
-      fontFamily: 'monospace',
-      fontSize: 13,
-      height: 1.45,
-      color: syntaxTheme['root']?.color,
-    );
+    final style = ForgeStyle.of(context);
+    final syntaxTheme = style.dark
+        ? atomOneDarkReasonableTheme
+        : atomOneLightTheme;
+    final codeStyle = style.mono(color: syntaxTheme['root']?.color);
     final highlighted = _syntaxSpans(normalized, language, syntaxTheme);
 
     return Column(
@@ -5523,9 +5595,10 @@ class _AgentPageState extends State<AgentPage> with WidgetsBindingObserver {
             color:
                 syntaxTheme['root']?.backgroundColor ??
                 Theme.of(context).colorScheme.surfaceContainerLow,
-            borderRadius: BorderRadius.circular(7),
+            borderRadius: BorderRadius.circular(style.codeRadius),
             border: Border.all(
               color: Theme.of(context).colorScheme.outlineVariant,
+              width: style.hairline,
             ),
           ),
           child: SingleChildScrollView(
@@ -5577,6 +5650,21 @@ class _AgentPageState extends State<AgentPage> with WidgetsBindingObserver {
     );
   }
 
+  /// A replace can be drawn as a diff from its result details, or from an
+  /// exact-text call whose details were not kept. A regex call without
+  /// details does not say which text it matched.
+  bool _hasReplacePreview(TranscriptItem item) {
+    if (item.toolName != 'replace') return false;
+    if (item.toolDetails is Map) return true;
+    final arguments = item.toolArguments;
+    return !item.error &&
+        item.toolOutput.isNotEmpty &&
+        arguments is Map &&
+        arguments['oldText'] is String &&
+        (arguments['oldText'] as String).isNotEmpty &&
+        arguments['newText'] is String;
+  }
+
   Widget _replaceToolPreview(TranscriptItem item) {
     final arguments = item.toolArguments;
     final details = item.toolDetails;
@@ -5596,19 +5684,17 @@ class _AgentPageState extends State<AgentPage> with WidgetsBindingObserver {
         : arguments is Map
         ? '${arguments['newText'] ?? ''}'
         : '';
+    // A result reloaded without details still names its line in the output.
+    final reportedLine = RegExp(r'at line (\d+)').firstMatch(item.toolOutput);
     final startLine = details is Map && details['startLine'] is num
         ? (details['startLine'] as num).toInt()
-        : 1;
+        : int.tryParse(reportedLine?.group(1) ?? '');
     final oldLines = oldText.replaceAll('\r\n', '\n').split('\n');
     final newLines = newText.replaceAll('\r\n', '\n').split('\n');
-    final dark = Theme.of(context).brightness == Brightness.dark;
+    final style = ForgeStyle.of(context);
+    final dark = style.dark;
     final syntaxTheme = dark ? atomOneDarkReasonableTheme : atomOneLightTheme;
-    final codeStyle = TextStyle(
-      fontFamily: 'monospace',
-      fontSize: 13,
-      height: 1.45,
-      color: syntaxTheme['root']?.color,
-    );
+    final codeStyle = style.mono(color: syntaxTheme['root']?.color);
 
     Widget diffBlock({
       required String sign,
@@ -5645,7 +5731,7 @@ class _AgentPageState extends State<AgentPage> with WidgetsBindingObserver {
               child: Text(
                 [
                   for (var index = 0; index < lines.length; index++)
-                    '${startLine + index}',
+                    startLine == null ? '' : '${startLine + index}',
                 ].join('\n'),
                 style: codeStyle.copyWith(
                   color: Theme.of(context).colorScheme.onSurfaceVariant,
@@ -5687,35 +5773,42 @@ class _AgentPageState extends State<AgentPage> with WidgetsBindingObserver {
             color:
                 syntaxTheme['root']?.backgroundColor ??
                 Theme.of(context).colorScheme.surfaceContainerLow,
-            borderRadius: BorderRadius.circular(7),
+            borderRadius: BorderRadius.circular(style.codeRadius),
             border: Border.all(
               color: Theme.of(context).colorScheme.outlineVariant,
+              width: style.hairline,
             ),
           ),
-          child: SingleChildScrollView(
-            child: SingleChildScrollView(
-              scrollDirection: Axis.horizontal,
-              child: IntrinsicWidth(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  children: [
-                    diffBlock(
-                      sign: '-',
-                      lines: oldLines,
-                      background: dark
-                          ? const Color(0x443F1D24)
-                          : const Color(0xFFFFEBE9),
-                      key: const ValueKey('replace-preview-removed'),
+          child: LayoutBuilder(
+            builder: (context, box) => SingleChildScrollView(
+              child: SingleChildScrollView(
+                scrollDirection: Axis.horizontal,
+                // Short lines still tint the full width of the panel.
+                child: ConstrainedBox(
+                  constraints: BoxConstraints(minWidth: box.maxWidth),
+                  child: IntrinsicWidth(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        diffBlock(
+                          sign: '-',
+                          lines: oldLines,
+                          background: dark
+                              ? const Color(0x443F1D24)
+                              : const Color(0xFFFFEBE9),
+                          key: const ValueKey('replace-preview-removed'),
+                        ),
+                        diffBlock(
+                          sign: '+',
+                          lines: newLines,
+                          background: dark
+                              ? const Color(0x4433472B)
+                              : const Color(0xFFDAFBE1),
+                          key: const ValueKey('replace-preview-added'),
+                        ),
+                      ],
                     ),
-                    diffBlock(
-                      sign: '+',
-                      lines: newLines,
-                      background: dark
-                          ? const Color(0x4433472B)
-                          : const Color(0xFFDAFBE1),
-                      key: const ValueKey('replace-preview-added'),
-                    ),
-                  ],
+                  ),
                 ),
               ),
             ),
@@ -5756,7 +5849,12 @@ class _AgentPageState extends State<AgentPage> with WidgetsBindingObserver {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text(label, style: Theme.of(context).textTheme.labelMedium),
+            Text(
+              label,
+              style: Theme.of(context).textTheme.labelMedium?.copyWith(
+                color: Theme.of(context).colorScheme.onSurfaceVariant,
+              ),
+            ),
             const SizedBox(height: 2),
             if (selectable) SelectableText(text) else Text(text),
           ],
@@ -5793,9 +5891,12 @@ class _AgentPageState extends State<AgentPage> with WidgetsBindingObserver {
       width: double.infinity,
       padding: const EdgeInsets.all(10),
       decoration: BoxDecoration(
-        color: Theme.of(context).colorScheme.surfaceContainerLow,
-        borderRadius: BorderRadius.circular(8),
-        border: Border.all(color: Theme.of(context).colorScheme.outlineVariant),
+        color: Theme.of(context).colorScheme.surfaceContainerLowest,
+        borderRadius: BorderRadius.circular(ForgeStyle.of(context).codeRadius),
+        border: Border.all(
+          color: Theme.of(context).colorScheme.outlineVariant,
+          width: ForgeStyle.of(context).hairline,
+        ),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -5866,231 +5967,395 @@ class _AgentPageState extends State<AgentPage> with WidgetsBindingObserver {
     );
   }
 
-  Widget _message(TranscriptItem item) {
-    _observeMessageFonts(item);
-    final collapsible =
-        item.role.startsWith('Tool ·') || item.role == 'Compaction summary';
-    final card = Container(
-      constraints: const BoxConstraints(maxWidth: 820),
+  MarkdownStyleSheet _markdownStyle({Color? color, bool muted = false}) {
+    final theme = Theme.of(context);
+    final style = ForgeStyle.of(context);
+    final scheme = theme.colorScheme;
+    final text = color ?? (muted ? scheme.onSurfaceVariant : scheme.onSurface);
+    final size = muted ? style.bodySize - 1.5 : style.bodySize;
+    final body = TextStyle(color: text, fontSize: size, height: 1.5);
+    final heading = TextStyle(
+      color: text,
+      fontWeight: FontWeight.w700,
+      height: 1.3,
+      letterSpacing: -.2,
+    );
+    return MarkdownStyleSheet.fromTheme(theme).copyWith(
+      p: body,
+      listBullet: body,
+      tableBody: body,
+      a: TextStyle(color: scheme.primary, decoration: TextDecoration.underline),
+      h1: heading.copyWith(fontSize: size + 8),
+      h2: heading.copyWith(fontSize: size + 5),
+      h3: heading.copyWith(fontSize: size + 3),
+      h4: heading.copyWith(fontSize: size + 1),
+      h5: heading.copyWith(fontSize: size),
+      h6: heading.copyWith(fontSize: size, color: scheme.onSurfaceVariant),
+      strong: const TextStyle(fontWeight: FontWeight.w700),
+      blockSpacing: 10,
+      // The package merges this over a default that paints the card colour
+      // behind every line of code.
+      code: style
+          .mono(size: size - 1.5, color: text, height: 1.4)
+          .copyWith(backgroundColor: Colors.transparent),
+      codeblockDecoration: BoxDecoration(
+        color: scheme.surfaceContainer,
+        borderRadius: BorderRadius.circular(style.codeRadius),
+      ),
+      codeblockPadding: const EdgeInsets.all(12),
+      blockquote: body.copyWith(color: scheme.onSurfaceVariant),
+      blockquotePadding: const EdgeInsets.fromLTRB(12, 4, 8, 4),
+      blockquoteDecoration: BoxDecoration(
+        border: Border(left: BorderSide(color: scheme.primary, width: 3)),
+      ),
+      horizontalRuleDecoration: BoxDecoration(
+        border: Border(
+          top: BorderSide(color: scheme.outlineVariant, width: style.hairline),
+        ),
+      ),
+      tableBorder: TableBorder.all(
+        color: scheme.outlineVariant,
+        width: style.hairline,
+      ),
+      tableCellsPadding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
+    );
+  }
+
+  IconData _toolIcon(TranscriptItem item) => switch (item.toolName) {
+    'bash' => Icons.terminal,
+    'write' => Icons.description_outlined,
+    'replace' || 'edit' => Icons.difference_outlined,
+    'read' => Icons.article_outlined,
+    'cron' => Icons.schedule_outlined,
+    _ =>
+      item.role == 'Compaction summary' ? Icons.compress : Icons.build_outlined,
+  };
+
+  Widget _thinkingTrace(TranscriptItem item) {
+    final scheme = Theme.of(context).colorScheme;
+    final style = ForgeStyle.of(context);
+    return Container(
+      width: double.infinity,
+      decoration: BoxDecoration(
+        border: Border(
+          left: BorderSide(color: scheme.outlineVariant, width: 2),
+        ),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          InkWell(
+            borderRadius: BorderRadius.circular(style.codeRadius),
+            onTap: () => setState(
+              () => item.thinkingCollapsed = !item.thinkingCollapsed,
+            ),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(
+                    Icons.psychology_outlined,
+                    size: 16,
+                    color: scheme.onSurfaceVariant,
+                  ),
+                  const SizedBox(width: 6),
+                  Flexible(
+                    child: Text(
+                      item.thinkingCollapsed
+                          ? 'Thinking · tap to expand'
+                          : 'Thinking',
+                      style: TextStyle(
+                        color: scheme.onSurfaceVariant,
+                        fontSize: 12,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 4),
+                  Icon(
+                    item.thinkingCollapsed
+                        ? Icons.expand_more
+                        : Icons.expand_less,
+                    size: 18,
+                    color: scheme.onSurfaceVariant,
+                  ),
+                ],
+              ),
+            ),
+          ),
+          if (!item.thinkingCollapsed)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(12, 2, 8, 6),
+              child: MarkdownBody(
+                data: item.thinking,
+                selectable: true,
+                styleSheet: _markdownStyle(muted: true),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+
+  Widget _messageImages(TranscriptItem item) => Wrap(
+    spacing: 8,
+    runSpacing: 8,
+    children: item.images
+        .map(
+          (bytes) => ClipRRect(
+            borderRadius: BorderRadius.circular(
+              ForgeStyle.of(context).codeRadius,
+            ),
+            child: Image.memory(
+              bytes,
+              width: 240,
+              height: 180,
+              fit: BoxFit.contain,
+            ),
+          ),
+        )
+        .toList(),
+  );
+
+  Widget _messageBody(TranscriptItem item, {Color? color}) => MarkdownBody(
+    data: item.text,
+    selectable: true,
+    styleSheet: _markdownStyle(color: color),
+    imageBuilder: (uri, title, alt) => Tooltip(
+      message: uri.toString(),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const Icon(Icons.image_outlined),
+          const SizedBox(width: 6),
+          Flexible(child: Text(alt ?? 'Image')),
+        ],
+      ),
+    ),
+  );
+
+  /// The user's own turn: a bubble on the trailing side.
+  Widget _userMessage(TranscriptItem item) {
+    final style = ForgeStyle.of(context);
+    final corner = Radius.circular(style.bubbleRadius);
+    return Align(
+      alignment: Alignment.centerRight,
+      child: Semantics(
+        label: item.role,
+        child: FractionallySizedBox(
+          widthFactor: .86,
+          alignment: Alignment.centerRight,
+          child: Align(
+            alignment: Alignment.centerRight,
+            child: Container(
+              constraints: const BoxConstraints(maxWidth: 640),
+              margin: const EdgeInsets.only(top: 6, bottom: 12),
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
+              decoration: BoxDecoration(
+                color: item.error
+                    ? Theme.of(context).colorScheme.errorContainer
+                    : style.userBubbleColor,
+                borderRadius: BorderRadius.only(
+                  topLeft: corner,
+                  topRight: corner,
+                  bottomLeft: corner,
+                  bottomRight: const Radius.circular(5),
+                ),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  if (item.images.isNotEmpty) ...[
+                    _messageImages(item),
+                    if (item.text.isNotEmpty) const SizedBox(height: 8),
+                  ],
+                  if (item.text.isNotEmpty)
+                    _messageBody(
+                      item,
+                      color: item.error
+                          ? Theme.of(context).colorScheme.onErrorContainer
+                          : style.onUserBubbleColor,
+                    ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// Assistant and other prose turns read as plain text on the page.
+  Widget _proseMessage(TranscriptItem item) {
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+    final style = ForgeStyle.of(context);
+    final content = Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          children: [
+            Icon(
+              item.error
+                  ? Icons.error_outline
+                  : item.role == 'Assistant'
+                  ? Icons.auto_awesome
+                  : Icons.notes,
+              size: 14,
+              color: item.error ? scheme.error : scheme.primary,
+            ),
+            const SizedBox(width: 6),
+            Expanded(
+              child: Text(
+                item.role,
+                style: theme.textTheme.labelMedium?.copyWith(
+                  fontWeight: FontWeight.w600,
+                  color: item.error ? scheme.error : scheme.onSurfaceVariant,
+                ),
+              ),
+            ),
+          ],
+        ),
+        if (item.safetyStatus != null) _safetyBanner(item),
+        if (item.thinking.isNotEmpty) ...[
+          const SizedBox(height: 8),
+          _thinkingTrace(item),
+        ],
+        if (item.images.isNotEmpty) ...[
+          const SizedBox(height: 8),
+          _messageImages(item),
+        ],
+        if (item.text.isNotEmpty) ...[
+          const SizedBox(height: 6),
+          _messageBody(
+            item,
+            color: item.error ? scheme.onErrorContainer : null,
+          ),
+        ],
+      ],
+    );
+    return Container(
+      width: double.infinity,
       margin: const EdgeInsets.only(bottom: 14),
-      padding: const EdgeInsets.all(14),
+      padding: item.error
+          ? const EdgeInsets.all(12)
+          : const EdgeInsets.symmetric(vertical: 2),
+      decoration: item.error
+          ? BoxDecoration(
+              color: scheme.errorContainer,
+              borderRadius: BorderRadius.circular(style.cardRadius),
+            )
+          : null,
+      child: content,
+    );
+  }
+
+  /// Tool calls and compaction summaries fold into a one-line panel.
+  Widget _panelMessage(TranscriptItem item) {
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+    final style = ForgeStyle.of(context);
+    final accent = item.error ? scheme.error : scheme.onSurfaceVariant;
+    // The turn owns its tools: once it ends or is cancelled nothing runs.
+    final executing = item.running && agent.streaming;
+    final card = Container(
+      width: double.infinity,
+      margin: const EdgeInsets.only(bottom: 10),
+      padding: EdgeInsets.fromLTRB(12, 9, 10, item.collapsed ? 9 : 12),
       decoration: BoxDecoration(
         color: item.error
-            ? Theme.of(context).colorScheme.errorContainer
-            : (item.role == 'You'
-                  ? Theme.of(context).colorScheme.primaryContainer
-                  : Theme.of(context).colorScheme.surfaceContainerHighest),
-        borderRadius: BorderRadius.circular(12),
+            ? scheme.errorContainer.withValues(alpha: style.dark ? .35 : .45)
+            : style.panelColor,
+        borderRadius: BorderRadius.circular(style.cardRadius),
         border: Border.all(
           color: item.error
-              ? Theme.of(context).colorScheme.error
-              : Theme.of(context).colorScheme.outlineVariant,
+              ? scheme.error.withValues(alpha: .55)
+              : scheme.outlineVariant,
+          width: style.hairline,
         ),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Row(
+            crossAxisAlignment: item.collapsed
+                ? CrossAxisAlignment.center
+                : CrossAxisAlignment.start,
             children: [
+              Icon(_toolIcon(item), size: 16, color: accent),
+              const SizedBox(width: 8),
               Expanded(
                 child: Text(
                   item.role,
-                  style: TextStyle(
-                    fontSize: 12,
-                    fontWeight: FontWeight.w700,
-                    color: Theme.of(context).colorScheme.onSurfaceVariant,
+                  maxLines: item.collapsed ? 1 : null,
+                  overflow: item.collapsed ? TextOverflow.ellipsis : null,
+                  style: theme.textTheme.labelMedium?.copyWith(
+                    fontWeight: FontWeight.w600,
+                    color: item.error ? scheme.error : scheme.onSurface,
                   ),
                 ),
               ),
-              if (collapsible)
-                Icon(
-                  item.collapsed ? Icons.expand_more : Icons.expand_less,
-                  size: 19,
-                  color: Theme.of(context).colorScheme.onSurfaceVariant,
+              if (executing) ...[
+                const SizedBox(width: 8),
+                Semantics(
+                  key: ValueKey('tool-running-${item.id ?? item.hashCode}'),
+                  label: 'Running',
+                  child: SizedBox.square(
+                    dimension: 14,
+                    child: MediaQuery.disableAnimationsOf(context)
+                        ? Icon(
+                            Icons.hourglass_top_outlined,
+                            size: 14,
+                            color: scheme.primary,
+                          )
+                        : style.apple
+                        ? const CupertinoActivityIndicator(radius: 7)
+                        : const CircularProgressIndicator(strokeWidth: 2),
+                  ),
                 ),
+              ],
+              const SizedBox(width: 6),
+              Icon(
+                item.collapsed ? Icons.expand_more : Icons.expand_less,
+                size: 18,
+                color: scheme.onSurfaceVariant,
+              ),
             ],
           ),
           if (item.safetyStatus != null) _safetyBanner(item),
           if (item.thinking.isNotEmpty && !item.collapsed) ...[
             const SizedBox(height: 8),
-            Container(
-              width: double.infinity,
-              decoration: BoxDecoration(
-                color: Theme.of(
-                  context,
-                ).colorScheme.surfaceContainerLow.withValues(alpha: .72),
-                borderRadius: BorderRadius.circular(8),
-                border: Border.all(
-                  color: Theme.of(context).colorScheme.outlineVariant,
-                ),
-              ),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  InkWell(
-                    borderRadius: BorderRadius.circular(8),
-                    onTap: () => setState(
-                      () => item.thinkingCollapsed = !item.thinkingCollapsed,
-                    ),
-                    child: Padding(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 10,
-                        vertical: 8,
-                      ),
-                      child: Row(
-                        children: [
-                          Icon(
-                            Icons.psychology_outlined,
-                            size: 17,
-                            color: Theme.of(
-                              context,
-                            ).colorScheme.onSurfaceVariant,
-                          ),
-                          const SizedBox(width: 7),
-                          Expanded(
-                            child: Text(
-                              item.thinkingCollapsed
-                                  ? 'Thinking · tap to expand'
-                                  : 'Thinking',
-                              style: TextStyle(
-                                color: Theme.of(
-                                  context,
-                                ).colorScheme.onSurfaceVariant,
-                                fontSize: 12,
-                                fontWeight: FontWeight.w700,
-                              ),
-                            ),
-                          ),
-                          Icon(
-                            item.thinkingCollapsed
-                                ? Icons.expand_more
-                                : Icons.expand_less,
-                            size: 19,
-                            color: Theme.of(
-                              context,
-                            ).colorScheme.onSurfaceVariant,
-                          ),
-                        ],
-                      ),
-                    ),
-                  ),
-                  if (!item.thinkingCollapsed) ...[
-                    Divider(
-                      height: 1,
-                      color: Theme.of(context).colorScheme.outlineVariant,
-                    ),
-                    Padding(
-                      padding: const EdgeInsets.all(10),
-                      child: MarkdownBody(
-                        data: item.thinking,
-                        selectable: true,
-                        styleSheet:
-                            MarkdownStyleSheet.fromTheme(
-                              Theme.of(context),
-                            ).copyWith(
-                              p: TextStyle(
-                                color: Theme.of(
-                                  context,
-                                ).colorScheme.onSurfaceVariant,
-                                fontSize: 13,
-                                height: 1.35,
-                              ),
-                              code: const TextStyle(fontFamily: 'monospace'),
-                            ),
-                      ),
-                    ),
-                  ],
-                ],
-              ),
-            ),
+            _thinkingTrace(item),
           ],
           if (item.images.isNotEmpty && !item.collapsed) ...[
             const SizedBox(height: 8),
-            Wrap(
-              spacing: 8,
-              runSpacing: 8,
-              children: item.images
-                  .map(
-                    (bytes) => ClipRRect(
-                      borderRadius: BorderRadius.circular(8),
-                      child: Image.memory(
-                        bytes,
-                        width: 240,
-                        height: 180,
-                        fit: BoxFit.contain,
-                      ),
-                    ),
-                  )
-                  .toList(),
-            ),
-          ],
-          if (collapsible && item.collapsed) ...[
-            const SizedBox(height: 5),
-            Text(
-              item.role == 'Compaction summary'
-                  ? 'Summary folded · tap panel to expand'
-                  : 'Input and output folded · tap panel to expand',
-              style: TextStyle(
-                color: Theme.of(context).colorScheme.onSurfaceVariant,
-                fontSize: 12,
-              ),
-            ),
+            _messageImages(item),
           ],
           if (item.text.isNotEmpty && !item.collapsed) ...[
-            const SizedBox(height: 7),
+            const SizedBox(height: 10),
             if (item.toolName == 'write')
               _writeToolPreview(item)
-            else if (item.toolName == 'replace' && item.toolDetails is Map)
+            else if (_hasReplacePreview(item))
               _replaceToolPreview(item)
             else if (item.toolName == 'cron')
               _cronToolPreview(item)
-            else if (collapsible)
-              MarkdownBody(
-                data: item.text,
-                selectable: true,
-                styleSheet: MarkdownStyleSheet.fromTheme(Theme.of(context))
-                    .copyWith(
-                      code: const TextStyle(fontFamily: 'monospace'),
-                      codeblockDecoration: BoxDecoration(
-                        color: Theme.of(
-                          context,
-                        ).colorScheme.surfaceContainerLow,
-                        borderRadius: BorderRadius.circular(6),
-                      ),
-                      codeblockPadding: const EdgeInsets.all(12),
-                    ),
-              )
             else
               MarkdownBody(
                 data: item.text,
                 selectable: true,
-                styleSheet: MarkdownStyleSheet.fromTheme(Theme.of(context))
-                    .copyWith(
-                      codeblockDecoration: BoxDecoration(
-                        color: Theme.of(
-                          context,
-                        ).colorScheme.surfaceContainerLow,
-                        borderRadius: BorderRadius.circular(6),
-                      ),
-                      codeblockPadding: const EdgeInsets.all(12),
-                      blockquoteDecoration: BoxDecoration(
-                        border: Border(
-                          left: BorderSide(
-                            color: Theme.of(context).colorScheme.primary,
-                            width: 3,
-                          ),
-                        ),
-                      ),
+                styleSheet: _markdownStyle().copyWith(
+                  p: theme.textTheme.labelMedium?.copyWith(
+                    color: scheme.onSurfaceVariant,
+                  ),
+                  codeblockDecoration: BoxDecoration(
+                    color: scheme.surfaceContainerLowest,
+                    borderRadius: BorderRadius.circular(style.codeRadius),
+                    border: Border.all(
+                      color: scheme.outlineVariant,
+                      width: style.hairline,
                     ),
-                imageBuilder: (uri, title, alt) => Tooltip(
-                  message: uri.toString(),
-                  child: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      const Icon(Icons.image_outlined),
-                      const SizedBox(width: 6),
-                      Flexible(child: Text(alt ?? 'Image')),
-                    ],
                   ),
                 ),
               ),
@@ -6098,180 +6363,320 @@ class _AgentPageState extends State<AgentPage> with WidgetsBindingObserver {
         ],
       ),
     );
-    final child = collapsible
-        ? GestureDetector(
-            key: ValueKey('tool-panel-${item.id ?? item.hashCode}'),
-            behavior: HitTestBehavior.opaque,
-            onTap: () {
-              if (item.role.startsWith('Tool ·')) {
-                agent.toggleToolCollapsed(item);
-              } else {
-                setState(() => item.collapsed = !item.collapsed);
-              }
-            },
-            child: card,
-          )
-        : card;
-    return Align(
-      alignment: item.role == 'You'
-          ? Alignment.centerRight
-          : Alignment.centerLeft,
-      child: child,
+    return Semantics(
+      button: true,
+      label: item.collapsed ? 'Expand ${item.role}' : 'Collapse ${item.role}',
+      child: GestureDetector(
+        key: ValueKey('tool-panel-${item.id ?? item.hashCode}'),
+        behavior: HitTestBehavior.opaque,
+        onTap: () {
+          if (item.role.startsWith('Tool ·')) {
+            agent.toggleToolCollapsed(item);
+          } else {
+            setState(() => item.collapsed = !item.collapsed);
+          }
+        },
+        child: card,
+      ),
     );
   }
 
-  Widget _composerActionButton() {
-    if (agent.streaming) {
-      return FilledButton.icon(
-        key: const ValueKey('composer-stop'),
-        onPressed: agent.abort,
-        style: FilledButton.styleFrom(
-          backgroundColor: Theme.of(context).colorScheme.error,
-          foregroundColor: Theme.of(context).colorScheme.onError,
+  Widget _message(TranscriptItem item) {
+    _observeMessageFonts(item);
+    if (item.role.startsWith('Tool ·') || item.role == 'Compaction summary') {
+      return _panelMessage(item);
+    }
+    return item.role == 'You' ? _userMessage(item) : _proseMessage(item);
+  }
+
+  Widget _emptyTranscript() {
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+    return Center(
+      child: SingleChildScrollView(
+        padding: const EdgeInsets.all(24),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Container(
+              width: 52,
+              height: 52,
+              decoration: BoxDecoration(
+                color: scheme.primary.withValues(alpha: .12),
+                shape: BoxShape.circle,
+              ),
+              child: Icon(
+                agent.connected ? Icons.auto_awesome : Icons.lan_outlined,
+                color: scheme.primary,
+              ),
+            ),
+            const SizedBox(height: 14),
+            Text(
+              'Connect to pi-go-agent and start a conversation.',
+              textAlign: TextAlign.center,
+              style: theme.textTheme.bodyMedium?.copyWith(
+                color: scheme.onSurfaceVariant,
+              ),
+            ),
+          ],
         ),
-        icon: const Icon(Icons.stop),
-        label: const Text('Stop'),
+      ),
+    );
+  }
+
+  Widget _composerActionButton(bool compact) {
+    final scheme = Theme.of(context).colorScheme;
+    final style = ForgeStyle.of(context);
+    final streaming = agent.streaming;
+    final key = ValueKey(streaming ? 'composer-stop' : 'composer-send');
+    final onPressed = streaming
+        ? agent.abort
+        : agent.connected
+        ? _submit
+        : null;
+    final icon = Icon(streaming ? Icons.stop_rounded : Icons.arrow_upward);
+    final label = streaming ? 'Stop' : 'Send';
+    if (compact) {
+      // A phone has no room for a label beside the message.
+      return IconButton.filled(
+        key: key,
+        tooltip: label,
+        onPressed: onPressed,
+        constraints: BoxConstraints.tightFor(
+          width: style.controlHeight,
+          height: style.controlHeight,
+        ),
+        padding: EdgeInsets.zero,
+        iconSize: 20,
+        style: IconButton.styleFrom(
+          shape: const CircleBorder(),
+          backgroundColor: streaming ? scheme.error : scheme.primary,
+          foregroundColor: streaming ? scheme.onError : scheme.onPrimary,
+        ),
+        icon: icon,
       );
     }
     return FilledButton.icon(
-      key: const ValueKey('composer-send'),
-      onPressed: agent.connected ? _submit : null,
-      style: FilledButton.styleFrom(
-        backgroundColor: Colors.green.shade700,
-        foregroundColor: Colors.white,
-      ),
-      icon: const Icon(Icons.arrow_upward),
-      label: const Text('Send'),
+      key: key,
+      onPressed: onPressed,
+      style: streaming
+          ? FilledButton.styleFrom(
+              backgroundColor: scheme.error,
+              foregroundColor: scheme.onError,
+            )
+          : null,
+      icon: icon,
+      label: Text(label),
     );
   }
 
-  Widget _composer() => Padding(
-    padding: const EdgeInsets.fromLTRB(16, 10, 16, 14),
-    child: Column(
-      children: [
-        if (_commandSuggestions().isNotEmpty) ...[
-          Align(
-            alignment: Alignment.centerLeft,
-            child: Wrap(
-              spacing: 6,
-              runSpacing: 6,
-              children: _commandSuggestions()
-                  .map(
-                    (suggestion) => ActionChip(
-                      label: Text(
-                        '${suggestion.value}  ${suggestion.description}',
-                      ),
-                      onPressed: () => _chooseSuggestion(suggestion),
-                    ),
-                  )
-                  .toList(),
-            ),
-          ),
-          const SizedBox(height: 8),
-        ],
-        if (attachments.isNotEmpty) ...[
-          Align(
-            alignment: Alignment.centerLeft,
-            child: Wrap(
-              spacing: 8,
-              runSpacing: 8,
-              children: List.generate(attachments.length, (index) {
-                final image = attachments[index];
-                return InputChip(
-                  avatar: ClipRRect(
-                    borderRadius: BorderRadius.circular(3),
-                    child: Image.memory(
-                      image.bytes,
-                      width: 28,
-                      height: 28,
-                      fit: BoxFit.cover,
-                    ),
-                  ),
-                  label: Text(image.name),
-                  onDeleted: () => setState(() => attachments.removeAt(index)),
-                );
-              }),
-            ),
-          ),
-          const SizedBox(height: 8),
-        ],
-        Row(
-          crossAxisAlignment: CrossAxisAlignment.end,
-          children: [
-            IconButton.outlined(
-              tooltip: 'Attach images',
-              onPressed: agent.connected ? _pickImages : null,
-              icon: const Icon(Icons.add_photo_alternate_outlined),
-            ),
-            const SizedBox(width: 8),
-            Expanded(
-              child: Builder(
-                builder: (context) {
-                  final desktopInput =
-                      !_isNativeMobile &&
-                      MediaQuery.sizeOf(context).width >= 720;
-                  final editor = TextField(
-                    controller: prompt,
-                    focusNode: promptFocus,
-                    contentInsertionConfiguration:
-                        ContentInsertionConfiguration(
-                          allowedMimeTypes: supportedClipboardImageMimeTypes,
-                          onContentInserted: _handleInsertedContent,
-                        ),
-                    contextMenuBuilder: _editorContextMenu,
-                    minLines: 1,
-                    maxLines: 8,
-                    keyboardType: TextInputType.multiline,
-                    textInputAction: desktopInput
-                        ? TextInputAction.send
-                        : TextInputAction.newline,
-                    onSubmitted: desktopInput ? (_) => _submit() : null,
-                    decoration: InputDecoration(
-                      hintText: agent.streaming
-                          ? 'Agent is replying · prepare your next message'
-                          : desktopInput
-                          ? 'Enter to send · Shift+Enter for newline · / for commands'
-                          : 'Newline with Enter · tap Send when ready · / for commands',
-                      border: const OutlineInputBorder(),
-                    ),
-                  );
-                  final editorWithSubmit = desktopInput
-                      ? Focus(onKeyEvent: _desktopEditorKey, child: editor)
-                      : editor;
-                  if (kIsWeb) return editorWithSubmit;
-                  return Actions(
-                    actions: {
-                      PasteTextIntent: CallbackAction<PasteTextIntent>(
-                        onInvoke: (_) {
-                          unawaited(_pasteFromSystemClipboard());
-                          return null;
-                        },
-                      ),
-                    },
-                    child: editorWithSubmit,
-                  );
-                },
-              ),
-            ),
-            const SizedBox(width: 10),
-            if (_isNativeMobile)
-              Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  IconButton.outlined(
-                    tooltip: 'Close keyboard',
-                    onPressed: _dismissKeyboard,
-                    icon: const Icon(Icons.keyboard_arrow_down),
-                  ),
-                  const SizedBox(height: 4),
-                  _composerActionButton(),
-                ],
-              )
-            else
-              _composerActionButton(),
-          ],
+  Widget _composerEditor(bool desktopInput) {
+    final theme = Theme.of(context);
+    final style = ForgeStyle.of(context);
+    final editor = TextField(
+      controller: prompt,
+      focusNode: promptFocus,
+      contentInsertionConfiguration: ContentInsertionConfiguration(
+        allowedMimeTypes: supportedClipboardImageMimeTypes,
+        onContentInserted: _handleInsertedContent,
+      ),
+      contextMenuBuilder: _editorContextMenu,
+      minLines: 1,
+      maxLines: 8,
+      keyboardType: TextInputType.multiline,
+      textInputAction: desktopInput
+          ? TextInputAction.send
+          : TextInputAction.newline,
+      onSubmitted: desktopInput ? (_) => _submit() : null,
+      style: TextStyle(fontSize: style.bodySize, height: 1.4),
+      decoration: InputDecoration(
+        hintText: agent.streaming
+            ? 'Agent is replying · prepare your next message'
+            : desktopInput
+            ? 'Enter to send · Shift+Enter for newline · / for commands'
+            : 'Newline with Enter · tap Send when ready · / for commands',
+        hintMaxLines: 1,
+        hintStyle: TextStyle(
+          color: theme.colorScheme.onSurfaceVariant,
+          fontSize: style.bodySize,
+          height: 1.4,
         ),
-      ],
-    ),
+        // The surrounding composer draws the field's outline.
+        filled: false,
+        isDense: true,
+        border: InputBorder.none,
+        enabledBorder: InputBorder.none,
+        focusedBorder: InputBorder.none,
+        contentPadding: const EdgeInsets.symmetric(horizontal: 6, vertical: 9),
+      ),
+    );
+    final editorWithSubmit = desktopInput
+        ? Focus(onKeyEvent: _desktopEditorKey, child: editor)
+        : editor;
+    if (kIsWeb) return editorWithSubmit;
+    return Actions(
+      actions: {
+        PasteTextIntent: CallbackAction<PasteTextIntent>(
+          onInvoke: (_) {
+            unawaited(_pasteFromSystemClipboard());
+            return null;
+          },
+        ),
+      },
+      child: editorWithSubmit,
+    );
+  }
+
+  Widget _composer() => LayoutBuilder(
+    builder: (context, constraints) =>
+        _composerLayout(constraints.maxWidth < forgeCompactWidth),
   );
+
+  Widget _composerLayout(bool compact) {
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+    final style = ForgeStyle.of(context);
+    final desktopInput =
+        !_isNativeMobile &&
+        MediaQuery.sizeOf(context).width >= forgeCompactWidth;
+    final suggestions = _commandSuggestions();
+
+    final attach = _toolbarIconButton(
+      tooltip: 'Attach images',
+      onPressed: agent.connected ? _pickImages : null,
+      icon: Icons.add_photo_alternate_outlined,
+    );
+    final closeKeyboard = _toolbarIconButton(
+      tooltip: 'Close keyboard',
+      onPressed: _dismissKeyboard,
+      icon: Icons.keyboard_arrow_down,
+    );
+    final editor = _composerEditor(desktopInput);
+    final send = _composerActionButton(compact);
+    // Controls sit level with a one-line message and stay at the bottom edge
+    // once the message grows.
+    final rowHeight = math.max(
+      style.bodySize * 1.4 + 18,
+      style.touch ? 44.0 : style.controlHeight,
+    );
+    Widget level(Widget control) => SizedBox(
+      height: rowHeight,
+      child: Center(child: control),
+    );
+
+    final box = Container(
+      padding: EdgeInsets.fromLTRB(6, compact ? 4 : 5, 6, compact ? 6 : 5),
+      decoration: BoxDecoration(
+        color: style.family == ForgeFamily.material
+            ? scheme.surfaceContainer
+            : scheme.surfaceContainerLowest,
+        borderRadius: BorderRadius.circular(style.bubbleRadius),
+        border: Border.all(
+          color: promptFocus.hasFocus
+              ? scheme.primary.withValues(alpha: .7)
+              : scheme.outlineVariant,
+          width: promptFocus.hasFocus ? 1.2 : style.hairline,
+        ),
+        boxShadow: style.floatingShadow,
+      ),
+      child: compact
+          ? Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 6),
+                  child: editor,
+                ),
+                Row(
+                  children: [
+                    attach,
+                    const Spacer(),
+                    if (_isNativeMobile) ...[
+                      closeKeyboard,
+                      const SizedBox(width: 4),
+                    ],
+                    send,
+                  ],
+                ),
+              ],
+            )
+          : Row(
+              crossAxisAlignment: CrossAxisAlignment.end,
+              children: [
+                level(attach),
+                const SizedBox(width: 2),
+                Expanded(child: editor),
+                const SizedBox(width: 6),
+                if (_isNativeMobile) ...[
+                  level(closeKeyboard),
+                  const SizedBox(width: 6),
+                ],
+                level(send),
+                const SizedBox(width: 2),
+              ],
+            ),
+    );
+
+    return Padding(
+      padding: EdgeInsets.fromLTRB(12, 4, 12, style.touch ? 8 : 14),
+      child: Center(
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: forgeContentWidth),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              if (suggestions.isNotEmpty) ...[
+                Align(
+                  alignment: Alignment.centerLeft,
+                  child: Wrap(
+                    spacing: 6,
+                    runSpacing: 6,
+                    children: suggestions
+                        .map(
+                          (suggestion) => ActionChip(
+                            label: Text(
+                              '${suggestion.value}  ${suggestion.description}',
+                            ),
+                            onPressed: () => _chooseSuggestion(suggestion),
+                          ),
+                        )
+                        .toList(),
+                  ),
+                ),
+                const SizedBox(height: 8),
+              ],
+              if (attachments.isNotEmpty) ...[
+                Align(
+                  alignment: Alignment.centerLeft,
+                  child: Wrap(
+                    spacing: 8,
+                    runSpacing: 8,
+                    children: List.generate(attachments.length, (index) {
+                      final image = attachments[index];
+                      return InputChip(
+                        avatar: ClipRRect(
+                          borderRadius: BorderRadius.circular(4),
+                          child: Image.memory(
+                            image.bytes,
+                            width: 28,
+                            height: 28,
+                            fit: BoxFit.cover,
+                          ),
+                        ),
+                        label: Text(image.name),
+                        onDeleted: () =>
+                            setState(() => attachments.removeAt(index)),
+                      );
+                    }),
+                  ),
+                ),
+                const SizedBox(height: 8),
+              ],
+              box,
+            ],
+          ),
+        ),
+      ),
+    );
+  }
 }

@@ -65,6 +65,20 @@ The macOS app sandbox is enabled with outbound-network and user-selected read-on
 
 The **YOLO** switch immediately left of Sessions is session-specific. While enabled, `pi-go-agent` skips the Luna tool-safety classifier and manual approval gate. It can only be changed while the session is idle and is restored when that session is reopened.
 
+## Platform look
+
+Forge follows the platform it runs on; on the web this is the platform of the browser's operating system. `lib/forge_theme.dart` builds the theme and `lib/forge_adaptive.dart` presents secondary content.
+
+| | iOS | macOS | Android | Linux |
+|---|---|---|---|---|
+| Surfaces | neutral | neutral | Material 3 tonal | neutral |
+| Controls | 44 pt, no ink | compact, no ink | Material, ink | compact, no ink |
+| Confirmations | system alert | system alert | Material alert | Material alert |
+| Sessions, providers, models | bottom sheet | dialog | bottom sheet on phones, dialog on tablets | dialog |
+| Safety approval | bottom sheet | centred panel | bottom sheet on phones | centred panel |
+
+Below 720 logical pixels the composer stacks its controls under the message and sends with an icon; the header switches to icon buttons below 820.
+
 ## Image paste
 
 Images can be attached with the image picker or pasted directly into the prompt on macOS, web, and Android. Clipboard images use the same preview, four-image, and 10 MiB total limits as picked files; ordinary text paste is preserved.

@@ -34,6 +34,9 @@ void main() {
     expect(connection.messages.last.images.single, base64Decode(png));
     await tester.pumpWidget(MaterialApp(home: AgentPage(connection: connection)));
     await tester.pump();
+    expect(find.byType(Image), findsNothing);
+    await tester.tap(find.byKey(const ValueKey('tool-panel-browser-1')));
+    await tester.pump();
     expect(find.byType(Image), findsOneWidget);
   });
 }
