@@ -84,18 +84,24 @@ void main() {
 
   test('owned agent exits when its parent closes stdin', () async {
     final workspace = await Directory.systemTemp.createTemp('forge-eof-');
-    final process = await Process.start(helper!, [
-      '--serve',
-      '--cwd',
-      workspace.path,
-    ]);
+    final process = await Process.start(
+      helper!,
+      ['--serve', '--cwd', workspace.path],
+      // Reproduce a fresh installation, even on a developer machine with CLI
+      // providers installed. No provider executable is needed for shutdown.
+      environment: {
+        'PATH': workspace.path,
+        'PI_GO_CONFIG_DIR': '${workspace.path}/config',
+      },
+    );
     final output = process.stdout.drain<void>();
-    final errors = process.stderr.drain<void>();
+    final errors = process.stderr.transform(utf8.decoder).join();
     try {
       await process.stdin.close();
-      expect(await process.exitCode.timeout(const Duration(seconds: 5)), 0);
+      final code = await process.exitCode.timeout(const Duration(seconds: 5));
+      final diagnostics = await errors;
+      expect(code, 0, reason: diagnostics);
       await output;
-      await errors;
     } finally {
       process.kill();
       await workspace.delete(recursive: true);

@@ -29,6 +29,11 @@ func newClaudeCLIProvider(binary string) *claudeCLIProvider {
 	return &claudeCLIProvider{binary: binary, conversations: make(map[string]agyConversation)}
 }
 func (p *claudeCLIProvider) CloseSession(id string) {
+	// Optional CLI providers can be typed-nil values inside providerRouter's
+	// interfaces when the executable is not installed.
+	if p == nil {
+		return
+	}
 	p.mu.Lock()
 	delete(p.conversations, id)
 	p.mu.Unlock()

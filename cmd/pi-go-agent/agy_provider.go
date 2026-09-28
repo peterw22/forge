@@ -32,6 +32,10 @@ func newAgyProvider(binary string) *agyProvider {
 }
 
 func (p *agyProvider) CloseSession(id string) {
+	// Missing optional CLIs are represented by typed-nil provider interfaces.
+	if p == nil {
+		return
+	}
 	p.mu.Lock()
 	delete(p.conversations, id)
 	p.mu.Unlock()
