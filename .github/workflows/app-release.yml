@@ -1,0 +1,159 @@
+name: Desktop app release
+
+on:
+  push:
+    # Disjoint from release.yml's v*: app tags never trigger agent releases.
+    tags: ['app-v*']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: app-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  version:
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      prerelease: ${{ steps.version.outputs.prerelease }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - id: version
+        name: Validate the release tag
+        run: scripts/app-release-version.sh "$GITHUB_REF_NAME" >> "$GITHUB_OUTPUT"
+      - run: scripts/test-app-packaging.sh
+
+  build:
+    needs: version
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            platform: linux
+            arch: amd64
+          - os: ubuntu-24.04-arm
+            platform: linux
+            arch: arm64
+          - os: macos-15-intel
+            platform: macos
+            arch: amd64
+          - os: macos-15
+            platform: macos
+            arch: arm64
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    env:
+      APP_RELEASE_TAG: ${{ github.ref_name }}
+      APP_BUILD_NUMBER: ${{ github.run_number }}
+      OUT: ${{ github.workspace }}/dist/app-release
+      NOTARY_KEY_ID: ${{ secrets.NOTARY_KEY_ID }}
+      NOTARY_ISSUER_ID: ${{ secrets.NOTARY_ISSUER_ID }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
+        with:
+          go-version-file: go.mod
+      - name: Install Linux build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang cmake ninja-build pkg-config libgtk-3-dev libstdc++-14-dev libsecret-1-dev libjsoncpp-dev libnotify-dev xvfb rpm
+          go install github.com/goreleaser/nfpm/v2/cmd/nfpm@v2.45.0
+          scripts/test-app-packaging.sh
+      - name: Install Flutter 3.47.5 at its pinned revision
+        run: |
+          git clone --filter=blob:none --no-checkout https://github.com/flutter/flutter.git "$RUNNER_TEMP/flutter"
+          git -C "$RUNNER_TEMP/flutter" checkout 6a19cca56475dbfba1478ee68d7bd0c2ef891da1
+          echo "$RUNNER_TEMP/flutter/bin" >> "$GITHUB_PATH"
+      - name: Test agent and Flutter app
+        shell: bash
+        run: |
+          go vet ./...
+          go test ./...
+          mkdir -p flutter/pi_go_app/build/local-agent
+          go build -o flutter/pi_go_app/build/local-agent/pi-go-agent ./cmd/pi-go-agent
+          export PI_GO_AGENT_BIN="$PWD/flutter/pi_go_app/build/local-agent/pi-go-agent"
+          export PI_GO_CONFIG_DIR="$RUNNER_TEMP/test-agent-config"
+          cd flutter/pi_go_app
+          flutter pub get
+          flutter analyze
+          if [[ "$RUNNER_OS" == Linux ]]; then
+            xvfb-run -a flutter test
+          else
+            flutter test
+          fi
+      - name: Build Linux tarball, DEB and RPM
+        if: runner.os == 'Linux'
+        env:
+          PACKAGE_ARCH: ${{ matrix.arch }}
+        run: |
+          scripts/build-linux-app.sh
+          scripts/package-linux-app.sh "$APP_RELEASE_TAG" "$PACKAGE_ARCH" "$OUT"
+          scripts/verify-linux-packages.sh "$APP_RELEASE_TAG" "$PACKAGE_ARCH" "$OUT"
+      - name: Import optional Developer ID and notarization credentials
+        if: runner.os == 'macOS'
+        env:
+          MACOS_CERTIFICATE_P12: ${{ secrets.MACOS_CERTIFICATE_P12 }}
+          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+          NOTARY_KEY_P8: ${{ secrets.NOTARY_KEY_P8 }}
+        run: scripts/prepare-app-signing.sh
+      - name: Build macOS DMG
+        if: runner.os == 'macOS'
+        env:
+          PACKAGE_ARCH: ${{ matrix.arch }}
+        run: scripts/build-macos-dmg.sh "$APP_RELEASE_TAG" "$PACKAGE_ARCH"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: desktop-${{ matrix.platform }}-${{ matrix.arch }}
+          path: dist/app-release/*
+          if-no-files-found: error
+      - name: Remove signing credentials
+        if: always() && runner.os == 'macOS'
+        run: |
+          security delete-keychain "$RUNNER_TEMP/app-release.keychain-db" 2>/dev/null || true
+          rm -f "$RUNNER_TEMP/app-certificate.p12" "$RUNNER_TEMP/app-notary.p8"
+
+  publish:
+    needs: [version, build]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          pattern: desktop-*
+          path: release
+          merge-multiple: true
+      - name: Check all eight assets and write checksums
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        working-directory: release
+        run: |
+          for arch in amd64 arm64; do
+            test -s "Forge-$VERSION-macos-$arch.dmg"
+            for format in tar.gz deb rpm; do
+              test -s "Forge-$VERSION-linux-$arch.$format"
+            done
+          done
+          test "$(find . -maxdepth 1 -type f | wc -l)" -eq 8
+          sha256sum *.dmg *.tar.gz *.deb *.rpm > SHA256SUMS
+      - name: Publish desktop release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          PRERELEASE: ${{ needs.version.outputs.prerelease }}
+        run: |
+          options=(--verify-tag --title "Forge ${GITHUB_REF_NAME#app-v}" --generate-notes)
+          if [[ "$PRERELEASE" == true ]]; then
+            options+=(--prerelease)
+          fi
+          gh release create "$GITHUB_REF_NAME" "${options[@]}" \
+            --notes 'Native desktop builds with bundled local agents. Linux packages target Ubuntu 24.04+ or a compatible recent RPM distribution (glibc 2.39+, libstdc++ 14+). CI macOS builds omit APNs push entitlements; Developer ID signing/notarization depends on configured repository secrets. See docs/releasing.md.' \
+            release/*

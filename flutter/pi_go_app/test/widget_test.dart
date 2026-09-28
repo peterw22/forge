@@ -9,6 +9,36 @@ import 'package:shared_preferences/shared_preferences.dart';
 void main() {
   setUp(() => SharedPreferences.setMockInitialValues({}));
 
+  for (final platform in [TargetPlatform.macOS, TargetPlatform.linux]) {
+    testWidgets('$platform exposes local workspace and enabled Unix sockets', (
+      tester,
+    ) async {
+      debugDefaultTargetPlatformOverride = platform;
+      addTearDown(() => debugDefaultTargetPlatformOverride = null);
+      await tester.binding.setSurfaceSize(const Size(1280, 800));
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+      await tester.pumpWidget(const PiGoApp());
+      await tester.pumpAndSettle();
+      final modes = tester.widget<SegmentedButton<ConnectionKind>>(
+        find.byType(SegmentedButton<ConnectionKind>),
+      );
+      expect(modes.selected, {ConnectionKind.local});
+      expect(
+        modes.segments
+            .firstWhere((item) => item.value == ConnectionKind.unix)
+            .enabled,
+        isTrue,
+      );
+      final workspace = tester
+          .widgetList<TextField>(find.byType(TextField))
+          .firstWhere(
+            (field) => field.decoration?.labelText == 'Local workspace',
+          );
+      expect(workspace.enabled, isTrue);
+      debugDefaultTargetPlatformOverride = null;
+    });
+  }
+
   testWidgets('shows the disconnected agent shell', (tester) async {
     await tester.binding.setSurfaceSize(const Size(1024, 768));
     debugDefaultTargetPlatformOverride = TargetPlatform.macOS;
@@ -43,7 +73,7 @@ void main() {
       connections.segments
           .firstWhere((segment) => segment.value == ConnectionKind.unix)
           .enabled,
-      isFalse,
+      isTrue,
     );
     final promptField = tester
         .widgetList<TextField>(find.byType(TextField))

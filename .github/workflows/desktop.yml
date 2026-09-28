@@ -1,0 +1,55 @@
+name: Native desktop
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'flutter/pi_go_app/**'
+      - 'cmd/pi-go-agent/**'
+      - 'internal/**'
+      - 'go.*'
+      - 'scripts/build-linux-app.sh'
+      - 'packaging/linux/**'
+      - '.github/workflows/desktop.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  linux:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
+        with:
+          go-version-file: go.mod
+      - name: Install desktop dependencies and pinned Flutter
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang cmake ninja-build pkg-config libgtk-3-dev libstdc++-12-dev libsecret-1-dev libjsoncpp-dev libnotify-dev xvfb
+          git clone https://github.com/flutter/flutter.git "$RUNNER_TEMP/flutter"
+          git -C "$RUNNER_TEMP/flutter" checkout 6a19cca56475dbfba1478ee68d7bd0c2ef891da1
+          echo "$RUNNER_TEMP/flutter/bin" >> "$GITHUB_PATH"
+      - run: go test ./...
+      - name: Build native bundle
+        run: scripts/build-linux-app.sh
+      - name: Analyze and test with a real local helper
+        run: |
+          mkdir -p flutter/pi_go_app/build/local-agent
+          go build -o flutter/pi_go_app/build/local-agent/pi-go-agent ./cmd/pi-go-agent
+          export PI_GO_AGENT_BIN="$PWD/flutter/pi_go_app/build/local-agent/pi-go-agent"
+          export PI_GO_CONFIG_DIR="$RUNNER_TEMP/test-agent-config"
+          cd flutter/pi_go_app
+          flutter analyze
+          xvfb-run -a flutter test
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: forge-native-${{ matrix.os }}
+          path: dist/linux/*.tar.gz
+          if-no-files-found: error

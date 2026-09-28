@@ -7,7 +7,7 @@ bool get localAgentSupported => false;
 String get defaultLocalAddress => '';
 String get defaultUnixAddress => '';
 String get defaultWebSocketAddress => 'ws://127.0.0.1:7346/ws';
-Future<AgentTransport> connectLocalTransport() =>
+Future<AgentTransport> connectLocalTransport({String? workingDirectory}) =>
     Future.error(UnsupportedError('The bundled local agent is unavailable'));
 Future<AgentTransport> connectUnixTransport(String path) =>
     Future.error(UnsupportedError('Unix sockets are unavailable'));

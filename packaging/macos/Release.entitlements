@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <!-- Direct-download CI builds are unsandboxed. No restricted APNs entitlement
+       or provisioning profile is needed; remote push is not enabled here. -->
+  <key>com.apple.security.network.client</key>
+  <true/>
+</dict>
+</plist>

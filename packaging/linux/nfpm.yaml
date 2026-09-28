@@ -1,0 +1,75 @@
+name: forge-desktop
+arch: ${PACKAGE_ARCH}
+platform: linux
+version: ${PACKAGE_VERSION}
+version_schema: none
+release: 1
+section: devel
+priority: optional
+maintainer: Forge maintainers (https://github.com/peterw22/forge)
+homepage: https://github.com/peterw22/forge
+license: GPL-3.0-only
+description: |
+  Native Flutter desktop client with a bundled local Forge coding agent.
+  Runs as your user without a browser runtime or application sandbox.
+contents:
+  - src: ${PACKAGE_BUNDLE}/forge
+    dst: /usr/lib/forge/forge
+    expand: true
+  - src: ${PACKAGE_BUNDLE}/lib/
+    dst: /usr/lib/forge/lib/
+    type: tree
+    expand: true
+  - src: ${PACKAGE_BUNDLE}/data/
+    dst: /usr/lib/forge/data/
+    type: tree
+    expand: true
+  - src: ${PACKAGE_BUNDLE}/helpers/
+    dst: /usr/lib/forge/helpers/
+    type: tree
+    expand: true
+  - src: /usr/lib/forge/forge
+    dst: /usr/bin/forge
+    type: symlink
+    file_info:
+      mode: 0777
+  - src: ${PACKAGE_BUNDLE}/share/applications/com.tingouw.forge.desktop
+    dst: /usr/share/applications/com.tingouw.forge.desktop
+    expand: true
+  - src: ${PACKAGE_BUNDLE}/share/icons/hicolor/512x512/apps/com.tingouw.forge.png
+    dst: /usr/share/icons/hicolor/512x512/apps/com.tingouw.forge.png
+    expand: true
+  - src: ${PACKAGE_BUNDLE}/LICENSE
+    dst: /usr/share/doc/forge-desktop/LICENSE
+    expand: true
+overrides:
+  deb:
+    depends:
+      - libc6 (>= 2.39)
+      - libstdc++6 (>= 14)
+      - libgtk-3-0t64
+      - libglib2.0-0t64
+      - libepoxy0
+      - libgl1
+      - libegl1
+      - libsecret-1-0
+      - libnotify4
+      - libjsoncpp25
+    recommends:
+      - xdg-desktop-portal
+      - xdg-utils
+  rpm:
+    depends:
+      - glibc >= 2.39
+      - libstdc++ >= 14
+      - gtk3
+      - glib2
+      - libepoxy
+      - libglvnd-glx
+      - libglvnd-egl
+      - libsecret
+      - libnotify
+      - jsoncpp
+    recommends:
+      - xdg-desktop-portal
+      - xdg-utils

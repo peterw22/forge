@@ -7,14 +7,18 @@ One Flutter project that builds Forge for iOS, Android, macOS, Linux and the web
 | iOS | A remote agent | Push, while closed |
 | Android | A remote agent | Push, while closed |
 | macOS | A remote agent, or one the app starts itself | Push, while running |
-| Linux | A remote agent | Desktop, while running |
+| Linux | A remote agent, or one the native app starts itself | Desktop, while running |
 | Web | A remote agent, over `wss://` only | Push, while closed |
 
 Minimum versions: iOS 15, macOS 12.
 
 ## Run
 
-Start an agent, then the client:
+For local work on macOS or Linux, run `./scripts/run-desktop.sh` from the
+repository root, then choose **Local**, a workspace and **Connect**. No remote
+agent or device pairing is required. Provider login is configured separately.
+
+To connect to an independently running network agent, start it, then the client:
 
 ```bash
 ./pi-go-agent --listen ws://127.0.0.1:7346/ws --cwd /path/to/project
@@ -103,7 +107,7 @@ It needs Chrome or Chromium, and macOS for `sips`.
 
 Run from the repository root. Xcode is required.
 
-The packaged app contains a universal `pi-go-agent` and offers a **Local** connection that starts it with your home directory as the workspace. Disconnecting a local connection stops that agent and any work in progress; Forge warns first. A remote agent is never stopped by disconnecting.
+The packaged app contains a universal `pi-go-agent` and offers a **Local** connection that starts it in the chosen workspace (your home directory by default), without device pairing. Disconnecting a local connection stops that agent and any work in progress; Forge warns first. An independent Unix or remote agent is never stopped by disconnecting. For development use `./scripts/run-desktop.sh`; plain `flutter run` does not package the helper.
 
 The app is not sandboxed, because the agent it starts runs shell commands.
 
@@ -164,7 +168,19 @@ Browsers that support it load the WebAssembly build; others fall back to JavaScr
 
 ## Linux
 
-See [`flatpak/README.md`](../../flatpak/README.md). The Linux client cannot be built on macOS.
+See [native Linux desktop](../../docs/linux-desktop.md) for the non-Flatpak
+bundle, installation and local agents. Build on Linux:
+
+```bash
+./scripts/build-linux-app.sh  # from the repository root
+```
+
+For native development on Linux or macOS, `./scripts/run-desktop.sh` builds the
+Go helper and starts Flutter with it. A plain `flutter run` needs an explicit
+absolute `PI_GO_AGENT_BIN` pointing at a freshly built helper.
+
+The [legacy Flatpak](../../flatpak/README.md) is remote-only. The Linux client
+cannot be built on macOS.
 
 ## Notifications
 

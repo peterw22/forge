@@ -430,7 +430,9 @@ class AgentConnection extends ChangeNotifier {
     AgentTransport? candidate;
     try {
       candidate = switch (kind) {
-        ConnectionKind.local => await connectLocalTransport(),
+        ConnectionKind.local => await connectLocalTransport(
+          workingDirectory: endpoint,
+        ),
         ConnectionKind.unix => await connectUnixTransport(endpoint),
         ConnectionKind.tcp => await connectTcpTransport(endpoint),
         ConnectionKind.websocket => await connectWebSocketTransport(endpoint),
@@ -979,6 +981,11 @@ class AgentConnection extends ChangeNotifier {
             'auth_failed',
           }.contains(responseType)) {
         if (responseType == 'auth_success') {
+          if (_secureSession == null || !_encryptionRequired) {
+            throw StateError(
+              'Authentication success without an encrypted session',
+            );
+          }
           unawaited(_finishAttach());
         } else {
           onAuthenticationMessage?.call(this, response);
@@ -988,14 +995,13 @@ class AgentConnection extends ChangeNotifier {
       if (!_protocolReady &&
           responseType == 'response' &&
           response['command'] == 'get_state') {
-        if (endpointKind != ConnectionKind.local) {
+        if (_transport is! TrustedLocalTransport) {
           throw StateError(
-            'Network server attempted an unauthenticated plaintext session',
+            'Server attempted an unauthenticated plaintext session without verified local IPC',
           );
         }
-        // The bundled local child process is trusted parent/child IPC. Every
-        // independently reachable WebSocket, TCP, and Unix listener requires
-        // device identity and encrypted key confirmation.
+        // Only an owned child or a kernel-verified same-user Unix peer can
+        // skip device pairing. TCP/WebSocket never inherit this trust.
         unawaited(_finishAttach());
       }
       if ('${response['command'] ?? ''}'.startsWith('push_')) {
@@ -1758,7 +1764,8 @@ class _AgentPageState extends State<AgentPage> with WidgetsBindingObserver {
   bool get _showLocalAgentOption =>
       !flatpakFrontend &&
       !kIsWeb &&
-      defaultTargetPlatform == TargetPlatform.macOS &&
+      (defaultTargetPlatform == TargetPlatform.macOS ||
+          defaultTargetPlatform == TargetPlatform.linux) &&
       localAgentSupported;
 
   static const thinkingLevels = [
@@ -2457,7 +2464,7 @@ class _AgentPageState extends State<AgentPage> with WidgetsBindingObserver {
         final endpoint = '${value['address'] ?? ''}'.trim();
         if (kind == null ||
             endpoint.isEmpty ||
-            kind == ConnectionKind.local ||
+            (kind == ConnectionKind.local && !_showLocalAgentOption) ||
             (flatpakFrontend &&
                 (kind != ConnectionKind.websocket ||
                     _isFlatpakLoopbackEndpoint(endpoint)))) {
@@ -3213,11 +3220,12 @@ class _AgentPageState extends State<AgentPage> with WidgetsBindingObserver {
       final proceed = await showForgeAlert<bool>(
         context: context,
         title: 'Start bundled local agent?',
-        content: const [
+        content: [
           Text(
-            'Forge will start its bundled pi-go-agent with your home directory '
-            'as the workspace. Disconnecting this local connection or closing '
-            'Forge stops that agent and aborts any active work.',
+            'Forge will start pi-go-agent in ${slot.address}. '
+            'It runs as your user, with access to your files and developer tools. '
+            'Disconnecting this local connection or closing Forge stops that '
+            'agent and aborts any active work.',
           ),
         ],
         actions: const [
@@ -5792,7 +5800,7 @@ class _AgentPageState extends State<AgentPage> with WidgetsBindingObserver {
     );
     final endpoint = TextField(
       controller: address,
-      enabled: !agent.connected && connectionKind != ConnectionKind.local,
+      enabled: !agent.connected,
       autocorrect: false,
       keyboardType: TextInputType.url,
       decoration: InputDecoration(

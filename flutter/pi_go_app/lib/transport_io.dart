@@ -6,11 +6,14 @@ import 'package:web_socket_channel/web_socket_channel.dart';
 
 import 'transport_base.dart';
 
-bool get flatpakFrontend => Platform.isLinux;
-bool get nativeSocketsSupported => Platform.isMacOS;
-bool get webSocketOnlyClient =>
-    Platform.isMacOS || Platform.isIOS || flatpakFrontend;
-bool get localAgentSupported => Platform.isMacOS;
+bool get flatpakFrontend =>
+    Platform.isLinux &&
+    (Platform.environment.containsKey('FLATPAK_ID') ||
+        File('/.flatpak-info').existsSync());
+bool get nativeSocketsSupported =>
+    (Platform.isMacOS || Platform.isLinux) && !flatpakFrontend;
+bool get webSocketOnlyClient => Platform.isIOS || flatpakFrontend;
+bool get localAgentSupported => nativeSocketsSupported;
 String get defaultLocalAddress =>
     Platform.environment['HOME'] ?? 'Home directory';
 String get defaultWebSocketAddress =>
@@ -20,47 +23,70 @@ String get defaultWebSocketAddress =>
 String get defaultUnixAddress =>
     '${Platform.environment['HOME'] ?? ''}/.pi-go/agent.sock';
 
-Future<AgentTransport> connectLocalTransport() async {
-  if (!Platform.isMacOS) {
-    throw UnsupportedError(
-      'The bundled local agent is available only on macOS',
-    );
-  }
-  final home = Platform.environment['HOME']?.trim() ?? '';
-  if (home.isEmpty) throw StateError('HOME is not set');
-
+/// Never search the current workspace or PATH for executable helpers. A project
+/// can contain an untrusted pi-go-agent. Development uses an explicit override.
+Future<String> resolveAgentExecutable() async {
   final override = Platform.environment['PI_GO_AGENT_BIN']?.trim();
-  final contents = File(Platform.resolvedExecutable).parent.parent;
-  final bundled = '${contents.path}/Helpers/pi-go-agent';
+  final executableDirectory = File(Platform.resolvedExecutable).parent;
+  final bundled = Platform.isMacOS
+      ? '${executableDirectory.parent.path}/Helpers/pi-go-agent'
+      : '${executableDirectory.path}/helpers/pi-go-agent';
   final executable = override != null && override.isNotEmpty
       ? override
       : bundled;
+  if (!executable.startsWith('/')) {
+    throw StateError('PI_GO_AGENT_BIN must be an absolute path');
+  }
   if (!await File(executable).exists()) {
     throw StateError(
-      'Bundled pi-go-agent was not found at $executable. '
-      'Build Forge with scripts/build-macos-app.sh.',
+      'pi-go-agent was not found at $executable. '
+      'Use scripts/build-${Platform.isMacOS ? 'macos' : 'linux'}-app.sh, '
+      'or build the agent and set PI_GO_AGENT_BIN to its absolute path '
+      'before flutter run.',
     );
   }
+  return executable;
+}
 
+Map<String, String> _agentEnvironment(String home) {
   final environment = Map<String, String>.from(Platform.environment);
   final pathParts = <String>[
     '$home/.bun/bin',
     '$home/.local/bin',
+    '$home/.cargo/bin',
+    '$home/go/bin',
     '$home/.volta/bin',
     ..._nvmNodeBinDirectories(home),
-    '/opt/homebrew/bin',
+    if (Platform.isMacOS) '/opt/homebrew/bin',
     '/usr/local/bin',
     environment['PATH'] ?? '',
+    '/usr/bin',
+    '/bin',
   ].where((value) => value.isNotEmpty).toSet().toList();
   environment['PATH'] = pathParts.join(':');
+  return environment;
+}
 
+Future<AgentTransport> connectLocalTransport({String? workingDirectory}) async {
+  if (!localAgentSupported) {
+    throw UnsupportedError(
+      'Local agents require an unsandboxed macOS or Linux app',
+    );
+  }
+  final home = Platform.environment['HOME']?.trim() ?? '';
+  if (home.isEmpty) throw StateError('HOME is not set');
+  final workspace = workingDirectory?.trim();
+  final cwd = workspace == null || workspace.isEmpty ? home : workspace;
+  if (!cwd.startsWith('/') || !await Directory(cwd).exists()) {
+    throw StateError('Local workspace must be an existing absolute directory');
+  }
   final process = await Process.start(
-    executable,
-    ['--serve', '--cwd', home],
-    workingDirectory: home,
-    environment: environment,
+    await resolveAgentExecutable(),
+    ['--serve', '--cwd', cwd],
+    workingDirectory: cwd,
+    environment: _agentEnvironment(home),
   );
-  return _ProcessTransport(process);
+  return _ProcessTransport(process, ownsAgent: true);
 }
 
 List<String> _nvmNodeBinDirectories(String home) {
@@ -78,11 +104,14 @@ List<String> _nvmNodeBinDirectories(String home) {
 }
 
 Future<AgentTransport> connectUnixTransport(String path) async {
-  if (flatpakFrontend) {
-    throw UnsupportedError('Unix socket connections are disabled in Flatpak');
+  if (!nativeSocketsSupported) {
+    throw UnsupportedError('Unix sockets require an unsandboxed desktop app');
   }
-  final address = InternetAddress(path, type: InternetAddressType.unix);
-  return _SocketTransport(await Socket.connect(address, 0));
+  final process = await Process.start(await resolveAgentExecutable(), [
+    '--connect-unix',
+    path,
+  ]);
+  return _ProcessTransport(process, ownsAgent: false);
 }
 
 Future<AgentTransport> connectTcpTransport(String value) async {
@@ -117,21 +146,36 @@ bool _isLoopbackHost(String host) {
       normalized == '::';
 }
 
-class _ProcessTransport implements AgentTransport {
-  _ProcessTransport(this.process) {
+class _ProcessTransport implements AgentTransport, TrustedLocalTransport {
+  _ProcessTransport(this.process, {required this.ownsAgent}) {
     _stderr = process.stderr
         .transform(utf8.decoder)
         .transform(const LineSplitter())
-        .listen((line) => stderr.writeln('pi-go-agent: $line'));
+        .listen((line) {
+          stderr.writeln('pi-go-agent: $line');
+          _recentErrors.add(line);
+          if (_recentErrors.length > 12) _recentErrors.removeAt(0);
+        });
   }
 
   final Process process;
+  final bool ownsAgent;
+  final List<String> _recentErrors = [];
   late final StreamSubscription<String> _stderr;
   bool _closing = false;
 
   @override
-  Stream<String> get messages =>
-      process.stdout.transform(utf8.decoder).transform(const LineSplitter());
+  Stream<String> get messages async* {
+    yield* process.stdout
+        .transform(utf8.decoder)
+        .transform(const LineSplitter());
+    final code = await process.exitCode;
+    if (!_closing && code != 0) {
+      throw StateError(
+        'pi-go-agent exited ($code): ${_recentErrors.join('\n')}',
+      );
+    }
+  }
 
   @override
   void send(String message) {
@@ -143,10 +187,13 @@ class _ProcessTransport implements AgentTransport {
     if (_closing) return;
     _closing = true;
     try {
-      process.stdin.writeln(
-        jsonEncode({'id': 'flutter-local-shutdown', 'type': 'shutdown'}),
-      );
+      if (ownsAgent) {
+        process.stdin.writeln(
+          jsonEncode({'id': 'flutter-local-shutdown', 'type': 'shutdown'}),
+        );
+      }
       await process.stdin.flush();
+      await process.stdin.close();
     } catch (_) {
       // The helper may already have exited.
     }

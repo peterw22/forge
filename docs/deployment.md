@@ -48,7 +48,7 @@ A push service delivers only to apps signed by the account that owns the push cr
 | Platform | Guide |
 |---|---|
 | iOS, Android, macOS, web | [`flutter/pi_go_app/README.md`](../flutter/pi_go_app/README.md) |
-| Linux | [`flatpak/README.md`](../flatpak/README.md) |
+| Linux | [Native desktop](linux-desktop.md) |
 | Publishing iOS and web builds | [`s3/README.md`](../s3/README.md) |
 
 The web client and the Linux client need no signing and work with any agent.

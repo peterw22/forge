@@ -1,4 +1,7 @@
-# Forge Flatpak
+# Forge Flatpak (legacy remote-only frontend)
+
+For an unsandboxed native desktop app with local agents, use
+[the native Linux build](../docs/linux-desktop.md) instead.
 
 The Flatpak build is a **remote frontend only**:
 

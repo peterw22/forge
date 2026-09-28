@@ -87,7 +87,7 @@ A file, a web page or a tool result can contain text written to steer the model 
 |---|---|
 | Read keys or credentials | Files are created with mode `0600` in a `0700` directory |
 | Add a device to the whitelist | The agent refuses a whitelist that group or others can write |
-| Connect to the local socket | Unix sockets are created with mode `0600` and still require authentication |
+| Connect to the local socket | Unix sockets use mode `0600` and device authentication by default. Explicit `--unix-peer-auth` instead verifies kernel peer UIDs on both sides and trusts all same-user processes; never proxy this mode to a network |
 
 ### A lost or compromised device
 

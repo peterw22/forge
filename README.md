@@ -6,6 +6,11 @@ The agent reads and edits files and runs shell commands in a workspace you choos
 
 ## Quick start
 
+**Local desktop work:** on macOS or Linux, run `./scripts/run-desktop.sh` from
+this checkout and select **Local**. Forge starts its own agent without device
+pairing. For a native Linux release without Chrome or Flatpak, see
+[Linux desktop](docs/linux-desktop.md).
+
 **1. Install the agent** on the machine you want to work on, Linux or macOS:
 
 ```bash
@@ -220,7 +225,8 @@ The relay at `forge-push.tingouw.com` holds the credentials of the maintainer's 
 | iOS | A remote agent | Push, while closed[^push] |
 | Android | A remote agent | Push, while closed[^push] |
 | macOS | A remote agent, or one the app starts itself | Push, while running[^push] |
-| Linux (Flatpak) | A remote agent | Desktop, while running |
+| Linux (native) | A remote agent, or one the app starts itself | Desktop, while running |
+| Linux (Flatpak, legacy) | A remote agent | Desktop, while running |
 | Web | A remote agent, over `wss://` only | Push, while closed |
 
 [^push]: In an app of the maintainer's account. See [an app that you build](#an-app-that-you-build).

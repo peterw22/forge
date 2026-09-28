@@ -32,7 +32,8 @@ func main() {
 		return
 	}
 	var prompt, model, thinking, systemPrompt, cwd string
-	var serve bool
+	var serve, unixPeerAuth bool
+	var unixBridge string
 	var sessionPath string
 	var resume bool
 	var listenAddress string
@@ -54,7 +55,20 @@ func main() {
 	flag.StringVar(&thinking, "thinking", "high", "thinking level: off, minimal, low, medium, high, xhigh, max")
 	flag.StringVar(&systemPrompt, "system-prompt", "", "system prompt (defaults to the Pi Go coding-agent prompt)")
 	flag.StringVar(&cwd, "cwd", "", "working directory for built-in tools")
+	flag.BoolVar(&unixPeerAuth, "unix-peer-auth", false, "trust kernel-verified same-user Unix clients instead of device pairing (Unix listeners only)")
+	flag.StringVar(&unixBridge, "connect-unix", "", "bridge stdin/stdout to a kernel-verified same-user Unix socket")
 	flag.Parse()
+	if unixBridge != "" {
+		if err := bridgeUnix(unixBridge, os.Stdin, os.Stdout); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		return
+	}
+	if err := validateUnixPeerMode(listenAddress, authorizedDevices, unixPeerAuth); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(2)
+	}
 	if authorize {
 		if err := runAuthorizeDevice(authorizedDevices, os.Stdin, os.Stdout); err != nil {
 			fmt.Fprintln(os.Stderr, err)
@@ -90,10 +104,10 @@ func main() {
 		return
 	}
 	var authPolicy *clientAuthPolicy
-	// Every TCP/WebSocket/Unix listener is an authentication boundary,
-	// including loopback listeners behind tunnels. Stdio --serve remains a
-	// trusted parent/child IPC mode for the local TUI and bundled helper.
-	if strings.TrimSpace(listenAddress) != "" && strings.TrimSpace(authorizedDevices) == "" {
+	// Network listeners require device authentication. An explicitly opted-in
+	// Unix listener uses kernel-verified same-user credentials instead.
+	// Stdio remains trusted parent/child IPC.
+	if !unixPeerAuth && strings.TrimSpace(listenAddress) != "" && strings.TrimSpace(authorizedDevices) == "" {
 		defaultPath, pathErr := defaultAuthorizedDevicesPath()
 		if pathErr != nil {
 			fmt.Fprintln(os.Stderr, "remote listener authentication:", pathErr)
@@ -279,7 +293,7 @@ func main() {
 			if strings.HasPrefix(listenAddress, "ws://") {
 				err = serveWebSocket(registry, listenAddress, allowRemote, authPolicy)
 			} else {
-				err = serveSocket(registry, listenAddress, allowRemote, authPolicy)
+				err = serveSocketWithPeerAuth(registry, listenAddress, allowRemote, authPolicy, unixPeerAuth)
 			}
 			if err != nil {
 				fmt.Fprintln(os.Stderr, err)
@@ -443,8 +457,18 @@ type backendResponse struct {
 var errBackendShutdown = errors.New("agent backend shutdown")
 
 func serveSocket(registry *runtimeRegistry, endpoint string, allowRemote bool, authPolicy *clientAuthPolicy) error {
-	if authPolicy == nil {
-		return errors.New("TCP and Unix listeners require an authorized device whitelist")
+	return serveSocketWithPeerAuth(registry, endpoint, allowRemote, authPolicy, false)
+}
+
+func serveSocketWithPeerAuth(registry *runtimeRegistry, endpoint string, allowRemote bool, authPolicy *clientAuthPolicy, peerAuth bool) error {
+	if err := validateUnixPeerMode(endpoint, "", peerAuth); err != nil {
+		return err
+	}
+	if peerAuth && authPolicy != nil {
+		return errors.New("Unix peer authentication cannot be combined with device authentication")
+	}
+	if authPolicy == nil && !peerAuth {
+		return errors.New("TCP and Unix listeners require an authorized device whitelist or explicit Unix peer authentication")
 	}
 	network, address, cleanup, err := socketEndpoint(endpoint, allowRemote)
 	if err != nil {
@@ -475,6 +499,18 @@ func serveSocket(registry *runtimeRegistry, endpoint string, allowRemote bool, a
 				return nil
 			default:
 				return acceptErr
+			}
+		}
+		if peerAuth {
+			unixConnection, ok := connection.(*net.UnixConn)
+			if !ok {
+				_ = connection.Close()
+				continue
+			}
+			if err := verifyUnixPeer(unixConnection); err != nil {
+				fmt.Fprintln(os.Stderr, "rejected Unix client:", err)
+				_ = connection.Close()
+				continue
 			}
 		}
 		clients.Add(1)

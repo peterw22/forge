@@ -10,13 +10,17 @@ String get defaultLocalAddress => '';
 String get defaultUnixAddress => '';
 String get defaultWebSocketAddress => 'wss://forge-agent.example/ws';
 
-Future<AgentTransport> connectLocalTransport() => Future.error(
-  UnsupportedError('The bundled local agent requires the native macOS app'),
+Future<AgentTransport> connectLocalTransport({String? workingDirectory}) =>
+    Future.error(
+      UnsupportedError(
+        'The bundled local agent requires the native desktop app',
+      ),
+    );
+Future<AgentTransport> connectUnixTransport(String path) => Future.error(
+  UnsupportedError('Unix sockets require the native desktop app'),
 );
-Future<AgentTransport> connectUnixTransport(String path) =>
-    Future.error(UnsupportedError('Unix sockets require the native macOS app'));
 Future<AgentTransport> connectTcpTransport(String value) =>
-    Future.error(UnsupportedError('Raw TCP requires the native macOS app'));
+    Future.error(UnsupportedError('Raw TCP requires the native desktop app'));
 
 Future<AgentTransport> connectWebSocketTransport(String value) async {
   final uri = Uri.parse(value.trim());

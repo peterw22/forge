@@ -34,7 +34,8 @@ Forge has three parts: an agent that runs on the machine you work on, clients th
 | `internal/tui` | Terminal rendering |
 | `flutter/pi_go_app` | The Forge client for every platform |
 | `worker-push` | The push relay, a Cloudflare Worker |
-| `flatpak` | Linux packaging |
+| `packaging/linux` | Native unsandboxed Linux desktop packaging |
+| `flatpak` | Legacy remote-only Linux packaging |
 | `s3` | Scripts that publish the iOS and web builds |
 | `scripts` | Build and maintenance scripts |
 | `docs` | This documentation |
@@ -93,7 +94,7 @@ When a conversation grows, `/compact` replaces older turns with a summary. The s
 
 - It follows the design language of each platform. See the [client README](../flutter/pi_go_app/README.md#platform-look).
 - It holds up to two connections at once, to the same agent or to different ones.
-- The macOS app can start an agent of its own. Every other client connects to an agent that is already running.
+- The native macOS and Linux apps can start an agent of their own over private stdio, or connect to a kernel-verified same-user Unix agent. Other clients connect to an agent that is already running. See [native desktop](linux-desktop.md).
 - Identity keys live in the platform's key store. See [device authentication](security/device-authentication.md#device-identity).
 
 Native code handles what Flutter cannot: key storage, and decrypting a notification while the app is not running. In a browser the service worker does the latter.

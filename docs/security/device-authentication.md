@@ -57,7 +57,7 @@ One P-256 key and a random device ID per Forge installation.
 | iOS, macOS | Keychain, accessible after first unlock, this device only |
 | Android | Android Keystore |
 | Web | WebCrypto, generated as non-extractable, stored in IndexedDB |
-| Linux (Flatpak) | A file inside the app sandbox with mode `0600` |
+| Linux | `$XDG_CONFIG_HOME/forge/device-identity.json` (default `~/.config/forge`), mode `0600`; sandbox-local in Flatpak |
 
 On iOS and macOS the key is stored as Keychain data that the app reads in order to sign. It is not bound to the Secure Enclave.
 
@@ -102,10 +102,20 @@ An empty list is valid and denies every device.
 
 | Transport | Authentication |
 |---|---|
-| `ws://`, `tcp://` and `unix://` listeners | Required, loopback included |
-| `--serve` on standard input and output | None. This is parent and child on one machine, used by the terminal client and the agent bundled in the macOS app |
+| `ws://`, `tcp://` and default `unix://` listeners | Device pairing and encryption required, loopback included |
+| `unix://` with explicit `--unix-peer-auth` | Kernel-verified same effective UID; plaintext local IPC, no device pairing |
+| `--serve` on standard input and output | Trusted parent/child IPC, used by the terminal client and bundled macOS/Linux agent |
 
-Loopback listeners authenticate too, because a tunnel can expose them.
+Loopback TCP/WebSocket listeners authenticate too, because a tunnel can expose them.
+
+`--unix-peer-auth` is available on macOS and Linux and cannot be combined with
+`--authorized-devices`. It trusts every process running as your user. The server
+checks the client's kernel peer UID; Forge's bundled `--connect-unix` bridge
+checks the server's UID before forwarding protocol data. A socket path, file
+owner, or server-provided flag is not sufficient to bypass pairing. Normal Unix
+listeners still require pairing. See [local desktop connections](../linux-desktop.md).
+Never expose a peer-authenticated socket through a network proxy: a same-user
+proxy would make remote traffic appear to come from that trusted local user.
 
 ## Handshake
 

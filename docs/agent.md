@@ -149,7 +149,19 @@ signs in to OpenAI Codex. The other providers are set up from Forge or their own
 ./pi-go-agent --serve
 ```
 
-Every network listener requires [device authentication](security/device-authentication.md). Add your device with `--authorize-device` before you connect; see [your first device](#your-first-device).
+TCP/WebSocket and default Unix listeners require [device authentication](security/device-authentication.md). Add your device with `--authorize-device` before you connect; see [your first device](#your-first-device).
+
+For local-only work on macOS/Linux, the native app's **Local** mode starts its
+own agent without device pairing. Alternatively, an independent Unix agent can
+explicitly trust kernel-verified same-user peers:
+
+```bash
+./pi-go-agent --listen "unix://$HOME/.pi-go/agent.sock" --unix-peer-auth --cwd "$PWD"
+```
+
+Choose **Unix** in Forge and enter the absolute socket path. This is plaintext
+local IPC, not a network authentication bypass; do not proxy it onto a network.
+See [native desktop](linux-desktop.md) for the trust model and build instructions.
 
 A WebSocket listener answers a health check at `/healthz`.
 
@@ -175,6 +187,8 @@ Forge's protocol authenticates and encrypts on its own, and has not been indepen
 | Option | Meaning |
 |---|---|
 | `--listen <address>` | Serve on `ws://`, `tcp://` or `unix://` |
+| `--unix-peer-auth` | Unix-only: authenticate kernel-verified same-user peers instead of device keys |
+| `--connect-unix <path>` | Bridge stdio to a same-user Unix server after verifying its kernel UID |
 | `--serve` | Serve on standard input and output |
 | `--allow-remote` | Permit an address that is not loopback |
 | `--authorized-devices <file>` | The device whitelist |

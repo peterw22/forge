@@ -38,7 +38,8 @@
 | Document | Covers |
 |---|---|
 | [Forge client](../flutter/pi_go_app/README.md) | Building for each platform |
-| [Linux package](../flatpak/README.md) | The Flatpak |
+| [Native Linux desktop](linux-desktop.md) | Unsandboxed Flutter bundle and local agents |
+| [Legacy Flatpak](../flatpak/README.md) | Remote-only sandboxed frontend |
 | [Push relay](../worker-push/README.md) | Deploying the relay |
 | [Publishing](../s3/README.md) | The scripts that publish iOS and web builds |
 | [Pi provider bridge](legacy-pi-bridge.md) | The original bridge for the Pi coding agent |
