@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Fast checks require only Bash. If nfpm is installed, build real fixture DEBs
 # and RPMs for both architectures without needing a Flutter/Linux build host.
-set -euo pipefail
+set -Eeuo pipefail
+trap 'echo "Packaging test failed at line $LINENO: $BASH_COMMAND" >&2' ERR
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source "$ROOT/scripts/app-release-version.sh"
 for tag in app-v1.2.3 app-v1.2.3-rc01 app-v0.0.0-rc0 app-v10.20.30-beta.2 app-v1.2.3-anything app-v1.2.3-nightly-2026.09.27; do

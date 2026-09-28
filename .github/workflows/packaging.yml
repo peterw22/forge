@@ -1,0 +1,21 @@
+name: Desktop packaging checks
+on:
+  push:
+    branches: ['ci/desktop-packaging']
+permissions:
+  contents: read
+jobs:
+  packages:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
+        with:
+          go-version-file: go.mod
+      - run: |
+          sudo apt-get update
+          sudo apt-get install -y rpm libarchive-tools
+          go install github.com/goreleaser/nfpm/v2/cmd/nfpm@v2.45.0
+          bash -x scripts/test-app-packaging.sh
