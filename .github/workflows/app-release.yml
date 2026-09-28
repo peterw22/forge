@@ -64,7 +64,7 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y clang cmake ninja-build pkg-config libgtk-3-dev libstdc++-14-dev libsecret-1-dev libjsoncpp-dev libnotify-dev xvfb rpm
+          sudo apt-get install -y clang cmake ninja-build pkg-config libgtk-3-dev libstdc++-14-dev libsecret-1-dev libjsoncpp-dev libnotify-dev xvfb rpm libarchive-tools
           go install github.com/goreleaser/nfpm/v2/cmd/nfpm@v2.45.0
           scripts/test-app-packaging.sh
       - name: Install Flutter 3.47.5 at its pinned revision

@@ -20,7 +20,10 @@ WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 dpkg-deb -x "$deb" "$WORK/deb"
 mkdir "$WORK/rpm"
-(cd "$WORK/rpm" && rpm2cpio "$rpm" | cpio -idm --quiet --no-absolute-filenames)
+# libarchive safely rebases absolute archive members into this directory.
+# Ubuntu's cpio returns a warning exit status for those members even with
+# --no-absolute-filenames; do not suppress errors to work around it.
+bsdtar -xf "$rpm" -C "$WORK/rpm"
 for format in deb rpm; do
   root="$WORK/$format"
   test -x "$root/usr/lib/forge/forge"
