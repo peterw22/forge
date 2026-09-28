@@ -28,7 +28,8 @@ for format in deb rpm; do
   test -f "$root/usr/lib/forge/lib/libflutter_linux_gtk.so"
   test -f "$root/usr/lib/forge/data/icudtl.dat"
   test -f "$root/usr/share/applications/com.tingouw.forge.desktop"
-  test "$(readlink "$root/usr/bin/forge")" = /usr/lib/forge/forge
+  test -x "$root/usr/bin/forge"
+  cmp "$ROOT/packaging/linux/forge" "$root/usr/bin/forge"
   # Check every shipped library, not only the launcher. Missing dependencies
   # fail the release rather than shipping a package that cannot load plugins.
   while IFS= read -r -d '' binary; do

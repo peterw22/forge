@@ -41,7 +41,7 @@ secrets and publish releases.
 ### Linux packages
 
 The tarball is a relocatable bundle with a user-local installer. The DEB and RPM
-install under `/usr/lib/forge`, link `/usr/bin/forge`, and install the desktop
+install under `/usr/lib/forge`, provide a `/usr/bin/forge` launcher, and install the desktop
 entry, icon and license under `/usr/share`. Neither package installs a service,
 runs an agent as root, or changes user configuration. Package name:
 `forge-desktop`. RPM metadata maps amd64 to `x86_64` and arm64 to `aarch64`.

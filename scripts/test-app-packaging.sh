@@ -68,18 +68,28 @@ for arch in amd64 arm64; do
   test -f "$WORK/payload-$arch/usr/lib/forge/data/flutter_assets/test-asset"
   test -f "$WORK/payload-$arch/usr/lib/forge/lib/libflutter_linux_gtk.so"
   test -x "$WORK/payload-$arch/usr/lib/forge/helpers/pi-go-agent"
-  test "$(readlink "$WORK/payload-$arch/usr/bin/forge")" = /usr/lib/forge/forge
+  test -x "$WORK/payload-$arch/usr/bin/forge"
+  cmp "$ROOT/packaging/linux/forge" "$WORK/payload-$arch/usr/bin/forge"
   mkdir -p "$WORK/control-$arch"
   ar -p "$WORK/$name.deb" control.tar.gz | tar -xz -C "$WORK/control-$arch"
   grep -qx "Architecture: $arch" "$WORK/control-$arch/control"
   grep -qx 'Version: 1.2.3~rc09-1' "$WORK/control-$arch/control"
+  if command -v bsdtar >/dev/null; then
+    mkdir -p "$WORK/rpm-bsdtar-$arch"
+    bsdtar -xf "$WORK/$name.rpm" -C "$WORK/rpm-bsdtar-$arch"
+    test -f "$WORK/rpm-bsdtar-$arch/usr/lib/forge/data/flutter_assets/test-asset"
+    test -x "$WORK/rpm-bsdtar-$arch/usr/lib/forge/helpers/pi-go-agent"
+    test -x "$WORK/rpm-bsdtar-$arch/usr/bin/forge"
+    cmp "$ROOT/packaging/linux/forge" "$WORK/rpm-bsdtar-$arch/usr/bin/forge"
+  fi
   if command -v rpm2cpio >/dev/null; then
     rpm_file="$WORK/$name.rpm"
     mkdir -p "$WORK/rpm-payload-$arch"
     (cd "$WORK/rpm-payload-$arch" && rpm2cpio "$rpm_file" | cpio -idm --quiet --no-absolute-filenames)
     test -f "$WORK/rpm-payload-$arch/usr/lib/forge/data/flutter_assets/test-asset"
     test -x "$WORK/rpm-payload-$arch/usr/lib/forge/helpers/pi-go-agent"
-    test "$(readlink "$WORK/rpm-payload-$arch/usr/bin/forge")" = /usr/lib/forge/forge
+    test -x "$WORK/rpm-payload-$arch/usr/bin/forge"
+    cmp "$ROOT/packaging/linux/forge" "$WORK/rpm-payload-$arch/usr/bin/forge"
   fi
   if command -v dpkg-deb >/dev/null; then
     test "$(dpkg-deb -f "$WORK/$name.deb" Architecture)" = "$arch"
@@ -87,7 +97,8 @@ for arch in amd64 arm64; do
     dpkg-deb -x "$WORK/$name.deb" "$WORK/extracted-$arch"
     test -f "$WORK/extracted-$arch/usr/lib/forge/data/flutter_assets/test-asset"
     test -x "$WORK/extracted-$arch/usr/lib/forge/helpers/pi-go-agent"
-    test "$(readlink "$WORK/extracted-$arch/usr/bin/forge")" = /usr/lib/forge/forge
+    test -x "$WORK/extracted-$arch/usr/bin/forge"
+    cmp "$ROOT/packaging/linux/forge" "$WORK/extracted-$arch/usr/bin/forge"
   fi
 done
 echo 'Tag, script syntax and both-architecture DEB/RPM fixture tests passed.'

@@ -1,0 +1,3 @@
+#!/bin/sh
+# Execute the real binary in its bundle so Flutter and helper paths resolve.
+exec /usr/lib/forge/forge "$@"

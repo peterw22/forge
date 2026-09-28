@@ -28,11 +28,11 @@ contents:
     dst: /usr/lib/forge/helpers/
     type: tree
     expand: true
-  - src: /usr/lib/forge/forge
+  - src: ${PACKAGE_LAUNCHER}
     dst: /usr/bin/forge
-    type: symlink
+    expand: true
     file_info:
-      mode: 0777
+      mode: 0755
   - src: ${PACKAGE_BUNDLE}/share/applications/com.tingouw.forge.desktop
     dst: /usr/share/applications/com.tingouw.forge.desktop
     expand: true

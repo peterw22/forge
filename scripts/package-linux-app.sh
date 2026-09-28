@@ -16,6 +16,7 @@ trap 'rm -rf "$WORK"' EXIT
 tar -xzf "$OUT/$name.tar.gz" -C "$WORK"
 export PACKAGE_BUNDLE="$WORK/$name"
 export PACKAGE_VERSION="$APP_PACKAGE_VERSION"
+export PACKAGE_LAUNCHER="$ROOT/packaging/linux/forge"
 for file in forge helpers/pi-go-agent lib/libflutter_linux_gtk.so data/icudtl.dat LICENSE; do
   test -f "$PACKAGE_BUNDLE/$file" || { echo "Missing bundle file: $file" >&2; exit 1; }
 done
