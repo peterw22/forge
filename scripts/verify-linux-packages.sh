@@ -20,7 +20,7 @@ WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 dpkg-deb -x "$deb" "$WORK/deb"
 mkdir "$WORK/rpm"
-(cd "$WORK/rpm" && rpm2cpio "$rpm" | cpio -idm --quiet)
+(cd "$WORK/rpm" && rpm2cpio "$rpm" | cpio -idm --quiet --no-absolute-filenames)
 for format in deb rpm; do
   root="$WORK/$format"
   test -x "$root/usr/lib/forge/forge"

@@ -73,6 +73,14 @@ for arch in amd64 arm64; do
   ar -p "$WORK/$name.deb" control.tar.gz | tar -xz -C "$WORK/control-$arch"
   grep -qx "Architecture: $arch" "$WORK/control-$arch/control"
   grep -qx 'Version: 1.2.3~rc09-1' "$WORK/control-$arch/control"
+  if command -v rpm2cpio >/dev/null; then
+    rpm_file="$WORK/$name.rpm"
+    mkdir -p "$WORK/rpm-payload-$arch"
+    (cd "$WORK/rpm-payload-$arch" && rpm2cpio "$rpm_file" | cpio -idm --quiet --no-absolute-filenames)
+    test -f "$WORK/rpm-payload-$arch/usr/lib/forge/data/flutter_assets/test-asset"
+    test -x "$WORK/rpm-payload-$arch/usr/lib/forge/helpers/pi-go-agent"
+    test "$(readlink "$WORK/rpm-payload-$arch/usr/bin/forge")" = /usr/lib/forge/forge
+  fi
   if command -v dpkg-deb >/dev/null; then
     test "$(dpkg-deb -f "$WORK/$name.deb" Architecture)" = "$arch"
     test "$(dpkg-deb -f "$WORK/$name.deb" Version)" = '1.2.3~rc09-1'
